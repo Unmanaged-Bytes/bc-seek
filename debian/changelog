@@ -1,3 +1,18 @@
+bc-seek (0.1.1-1) stable; urgency=medium
+
+  * Refactor: consume new public APIs from upstream libs (libbc-io 1.1.0
+    dirent_reader, libbc-allocators 1.1.0 typed_array append_bulk,
+    libbc-runtime 1.1.0 error_collector). Drops ~200 LOC of duplicated
+    internal primitives (bc_seek_dirent, bc_seek_byte_buffer,
+    bc_seek_error_collector).
+  * No CLI surface change. No behavioural change. Bench on
+    /var/benchmarks (953k files, 19 GB, Ryzen 7 5700G, 10 warm runs
+    median): 0.181 s, identical to 0.1.0 (0.184 s) — within bench noise.
+  * Build-Depends now require libbc-io >= 1.1.0, libbc-allocators >=
+    1.1.0, libbc-runtime >= 1.1.0.
+
+ -- Younes Benmoussa <younes.benmoussa@pm.me>  Tue, 21 Apr 2026 21:50:00 +0000
+
 bc-seek (0.1.0-1) stable; urgency=medium
 
   * Initial public release.
