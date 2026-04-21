@@ -8,6 +8,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#define BC_SEEK_OUTPUT_EMIT_STACK_CAPACITY ((size_t)4097)
+
 #define BC_SEEK_OUTPUT_BUFFER_BYTES ((size_t)(64 * 1024))
 
 static char bc_seek_output_buffer_stdout[BC_SEEK_OUTPUT_BUFFER_BYTES];
@@ -41,11 +43,20 @@ bool bc_seek_output_open_file(const char* path, bool null_terminated, bc_seek_ou
 
 bool bc_seek_output_emit(bc_seek_output_t* output, const char* path, size_t path_length)
 {
-    if (fwrite(path, 1, path_length, output->stream) != path_length) {
-        return false;
-    }
-    if (fputc((unsigned char)output->separator, output->stream) == EOF) {
-        return false;
+    if (path_length + 1u <= BC_SEEK_OUTPUT_EMIT_STACK_CAPACITY) {
+        char combined[BC_SEEK_OUTPUT_EMIT_STACK_CAPACITY];
+        bc_core_copy(combined, path, path_length);
+        combined[path_length] = output->separator;
+        if (fwrite(combined, 1, path_length + 1u, output->stream) != path_length + 1u) {
+            return false;
+        }
+    } else {
+        if (fwrite(path, 1, path_length, output->stream) != path_length) {
+            return false;
+        }
+        if (fputc((unsigned char)output->separator, output->stream) == EOF) {
+            return false;
+        }
     }
     output->emitted_count += 1;
     return true;

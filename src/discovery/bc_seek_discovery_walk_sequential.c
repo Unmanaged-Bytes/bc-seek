@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 
+#include "bc_seek_dirent_internal.h"
 #include "bc_seek_discovery_internal.h"
 #include "bc_seek_filter_internal.h"
 #include "bc_seek_strings_internal.h"
@@ -12,7 +13,6 @@
 #include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -58,7 +58,7 @@ static bool bc_seek_walk_append_path(char* buffer, size_t buffer_capacity, size_
         buffer[current_length] = '/';
         current_length += 1u;
     }
-    memcpy(buffer + current_length, name, name_length);
+    bc_core_copy(buffer + current_length, name, name_length);
     current_length += name_length;
     buffer[current_length] = '\0';
     *path_length = current_length;
@@ -74,11 +74,6 @@ static void bc_seek_walk_truncate(char* buffer, size_t* path_length, size_t orig
 static bool bc_seek_walk_is_hidden_name(const char* name)
 {
     return name[0] == '.' && name[1] != '\0';
-}
-
-static bool bc_seek_walk_is_dot(const char* name)
-{
-    return (name[0] == '.' && name[1] == '\0') || (name[0] == '.' && name[1] == '.' && name[2] == '\0');
 }
 
 static bc_seek_entry_type_t bc_seek_walk_type_from_dtype(unsigned char d_type, bool* out_resolved)
@@ -153,18 +148,8 @@ static bool bc_seek_walk_open_subdir(const bc_seek_walk_context_t* context, int 
 
 static bool bc_seek_walk_iterate_entries(bc_seek_walk_context_t* context, int directory_fd, char* path_buffer, size_t path_length, size_t depth)
 {
-    int cloned_fd = dup(directory_fd);
-    if (cloned_fd < 0) {
-        bc_seek_error_collector_append(context->errors, path_buffer, errno);
-        return false;
-    }
-    DIR* dir_stream = fdopendir(cloned_fd);
-    if (dir_stream == NULL) {
-        int saved_errno = errno;
-        close(cloned_fd);
-        bc_seek_error_collector_append(context->errors, path_buffer, saved_errno);
-        return false;
-    }
+    bc_seek_dirent_reader_t reader;
+    bc_seek_dirent_reader_init(&reader, directory_fd);
 
     bool ok = true;
     for (;;) {
@@ -172,40 +157,36 @@ static bool bc_seek_walk_iterate_entries(bc_seek_walk_context_t* context, int di
             ok = false;
             break;
         }
-        errno = 0;
-        const struct dirent* entry = readdir(dir_stream);
-        if (entry == NULL) {
-            if (errno != 0) {
-                bc_seek_error_collector_append(context->errors, path_buffer, errno);
-                ok = false;
-            }
+        bc_seek_dirent_entry_t entry;
+        bool has_entry = false;
+        if (!bc_seek_dirent_reader_next(&reader, &entry, &has_entry)) {
+            bc_seek_error_collector_append(context->errors, path_buffer, reader.last_errno);
+            ok = false;
             break;
         }
-        if (bc_seek_walk_is_dot(entry->d_name)) {
-            continue;
+        if (!has_entry) {
+            break;
         }
-        if (!context->predicate->include_hidden && bc_seek_walk_is_hidden_name(entry->d_name)) {
+        if (!context->predicate->include_hidden && bc_seek_walk_is_hidden_name(entry.name)) {
             continue;
         }
 
-        size_t name_length = strlen(entry->d_name);
         size_t saved_path_length = path_length;
-        if (!bc_seek_walk_append_path(path_buffer, BC_SEEK_DISCOVERY_PATH_CAPACITY, &path_length, entry->d_name, name_length)) {
+        if (!bc_seek_walk_append_path(path_buffer, BC_SEEK_DISCOVERY_PATH_CAPACITY, &path_length, entry.name, entry.name_length)) {
             bc_seek_walk_truncate(path_buffer, &path_length, saved_path_length);
             continue;
         }
 
         bool type_resolved = false;
-        bc_seek_entry_type_t entry_type = bc_seek_walk_type_from_dtype(entry->d_type, &type_resolved);
-        const char* basename_pointer = path_buffer + saved_path_length + (path_buffer[saved_path_length] == '/' ? 1u : 0u);
-        size_t basename_length = path_length - (size_t)(basename_pointer - path_buffer);
+        bc_seek_entry_type_t entry_type = bc_seek_walk_type_from_dtype(entry.d_type, &type_resolved);
+        const char* basename_pointer = path_buffer + path_length - entry.name_length;
 
         bc_seek_candidate_t candidate;
         bc_core_zero(&candidate, sizeof(candidate));
         candidate.path = path_buffer;
         candidate.path_length = path_length;
         candidate.basename = basename_pointer;
-        candidate.basename_length = basename_length;
+        candidate.basename_length = entry.name_length;
         candidate.depth = depth + 1u;
         candidate.entry_type = entry_type;
         candidate.type_resolved = type_resolved;
@@ -224,9 +205,9 @@ static bool bc_seek_walk_iterate_entries(bc_seek_walk_context_t* context, int di
             }
         }
 
-        if (is_directory && bc_seek_walk_should_descend_directory(context, entry->d_name, name_length, candidate.depth)) {
+        if (is_directory && bc_seek_walk_should_descend_directory(context, entry.name, entry.name_length, candidate.depth)) {
             int subdir_fd = -1;
-            if (!bc_seek_walk_open_subdir(context, directory_fd, entry->d_name, &subdir_fd)) {
+            if (!bc_seek_walk_open_subdir(context, directory_fd, entry.name, &subdir_fd)) {
                 bc_seek_error_collector_append(context->errors, path_buffer, errno);
             } else {
                 bool recurse_ok = bc_seek_walk_process_directory(context, subdir_fd, path_buffer, path_length, candidate.depth);
@@ -242,7 +223,6 @@ static bool bc_seek_walk_iterate_entries(bc_seek_walk_context_t* context, int di
         bc_seek_walk_truncate(path_buffer, &path_length, saved_path_length);
     }
 
-    closedir(dir_stream);
     return ok;
 }
 
@@ -277,19 +257,22 @@ static bool bc_seek_walk_visit_root(bc_seek_walk_context_t* context, const char*
     }
 
     char path_buffer[BC_SEEK_DISCOVERY_PATH_CAPACITY];
-    size_t path_length = strlen(root_path);
+    size_t path_length = 0;
+    if (!bc_core_length(root_path, '\0', &path_length)) {
+        bc_seek_error_collector_append(context->errors, root_path, EINVAL);
+        return false;
+    }
     if (path_length >= sizeof(path_buffer)) {
         bc_seek_error_collector_append(context->errors, root_path, ENAMETOOLONG);
         return false;
     }
-    memcpy(path_buffer, root_path, path_length);
+    bc_core_copy(path_buffer, root_path, path_length);
     path_buffer[path_length] = '\0';
 
     const char* basename_pointer = path_buffer;
-    for (size_t index = 0; index < path_length; index++) {
-        if (path_buffer[index] == '/') {
-            basename_pointer = path_buffer + index + 1;
-        }
+    size_t slash_offset = 0;
+    if (bc_core_find_last_byte(path_buffer, path_length, '/', &slash_offset)) {
+        basename_pointer = path_buffer + slash_offset + 1;
     }
     size_t basename_length = path_length - (size_t)(basename_pointer - path_buffer);
 
