@@ -1,0 +1,35 @@
+Source: bc-seek
+Section: utils
+Priority: optional
+Maintainer: Younes Benmoussa <younes.benmoussa@pm.me>
+Build-Depends: debhelper-compat (= 13),
+               meson (>= 1.0),
+               ninja-build,
+               pkg-config,
+               libbc-core-dev (>= 1.0.0),
+               libbc-allocators-dev (>= 1.0.0),
+               libbc-containers-dev (>= 1.0.0),
+               libbc-io-dev (>= 1.0.0),
+               libbc-concurrency-dev (>= 1.0.0),
+               libbc-runtime-dev (>= 1.0.0),
+               libcmocka-dev
+Standards-Version: 4.6.2
+Homepage: https://unmanaged-bytes.com/
+Vcs-Git: https://github.com/Unmanaged-Bytes/bc-seek.git
+Vcs-Browser: https://github.com/Unmanaged-Bytes/bc-seek
+
+Package: bc-seek
+Architecture: amd64
+Depends: ${misc:Depends},
+         ${shlibs:Depends}
+Description: Parallel hardware-saturating file search CLI
+ Walks directory trees in parallel with a lock-free MPMC queue and
+ per-worker growable output buffers. Supports find(1)-style
+ predicates (--name, --type, --size, --mtime, --newer, --perm,
+ --max-depth, --min-depth), fd(1)-style defaults (hidden and
+ common build directories pruned unless --hidden / --no-ignore),
+ null-separated output, and an adaptive parallel / mono dispatch.
+ .
+ On warm-cache corpora (~1M files), typically 5x-9x faster than
+ find(1) and 5%-38% faster than fd(1), thanks to stat-lazy
+ predicate evaluation and per-worker contention-free accumulation.

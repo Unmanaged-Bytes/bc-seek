@@ -1,0 +1,22 @@
+bc-seek (0.1.0-1) stable; urgency=medium
+
+  * Initial public release.
+  * Parallel hardware-saturating file search CLI backed by the
+    bc-concurrency MPMC-queue + per-worker slot pattern.
+  * find(1)-compatible predicates: --name, --iname, --path, --type,
+    --size, --mtime, --newer, --perm, --max-depth, --min-depth.
+  * Walk-control flags: --hidden, --no-ignore, --follow-symlinks,
+    --one-file-system.
+  * Output: --output PATH|-, --null/-0 for xargs -0 consumption,
+    global --threads auto|0|N.
+  * fd(1)-style default prune list for common build / VCS dirs
+    (.git, node_modules, target, __pycache__, .venv, .cache, ...).
+  * Stat-lazy predicate evaluation: zero stat syscalls unless
+    --size / --mtime / --newer / --perm is active.
+  * Graceful SIGINT / SIGTERM handling -> exit code 130.
+  * On warm-cache /var/benchmarks (~1.07M files, 19 GB, 5700G):
+    - walk --type=f: 0.23s (find: 1.60s, fd: 0.26s)
+    - name '*.c':    0.21s (find: 1.90s, fd: 0.22s)
+    - size +1M:      0.38s (find: 3.10s, fd: 0.62s)
+
+ -- Younes Benmoussa <younes.benmoussa@pm.me>  Tue, 21 Apr 2026 20:00:00 +0000

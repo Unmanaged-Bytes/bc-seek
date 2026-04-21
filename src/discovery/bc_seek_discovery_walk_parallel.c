@@ -268,6 +268,7 @@ static void bc_seek_parallel_process_directory(bc_seek_parallel_shared_t* shared
         candidate.depth = directory_depth + 1u;
         candidate.entry_type = entry_type;
         candidate.type_resolved = type_resolved;
+        candidate.follow_symlinks_enabled = shared->follow_symlinks;
         candidate.parent_directory_fd = directory_file_descriptor;
 
         bc_seek_filter_decision_t decision = bc_seek_filter_evaluate(shared->predicate, &candidate);
@@ -281,7 +282,7 @@ static void bc_seek_parallel_process_directory(bc_seek_parallel_shared_t* shared
         }
 
         bool is_directory = candidate.type_resolved && candidate.entry_type == BC_SEEK_ENTRY_TYPE_DIRECTORY;
-        if (!candidate.type_resolved) {
+        if (!candidate.type_resolved || (shared->follow_symlinks && candidate.entry_type == BC_SEEK_ENTRY_TYPE_SYMLINK)) {
             if (bc_seek_filter_populate_stat(&candidate)) {
                 is_directory = candidate.entry_type == BC_SEEK_ENTRY_TYPE_DIRECTORY;
             }

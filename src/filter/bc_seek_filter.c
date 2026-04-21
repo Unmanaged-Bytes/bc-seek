@@ -118,6 +118,7 @@ bool bc_seek_predicate_from_options(const bc_seek_cli_options_t* options, bc_see
 
     out_predicate->include_hidden = options->include_hidden;
     out_predicate->respect_ignore_defaults = options->respect_ignore_defaults;
+    out_predicate->follow_symlinks = options->follow_symlinks;
 
     out_predicate->require_stat =
         options->has_size_filter || options->has_mtime_filter || options->has_newer_reference || options->has_perm_filter;
@@ -129,12 +130,12 @@ bool bc_seek_predicate_from_options(const bc_seek_cli_options_t* options, bc_see
 bool bc_seek_filter_populate_stat(bc_seek_candidate_t* candidate)
 {
     struct stat entry_stat;
-    int flags = AT_SYMLINK_NOFOLLOW;
+    int flags = candidate->follow_symlinks_enabled ? 0 : AT_SYMLINK_NOFOLLOW;
     int rc = fstatat(candidate->parent_directory_fd, candidate->basename, &entry_stat, flags);
     if (rc != 0) {
         return false;
     }
-    if (!candidate->type_resolved) {
+    if (!candidate->type_resolved || candidate->follow_symlinks_enabled) {
         if (S_ISREG(entry_stat.st_mode)) {
             candidate->entry_type = BC_SEEK_ENTRY_TYPE_FILE;
         } else if (S_ISDIR(entry_stat.st_mode)) {

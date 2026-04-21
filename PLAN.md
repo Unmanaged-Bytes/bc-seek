@@ -1,6 +1,12 @@
 # bc-seek — Plan d'implémentation
 
-**Statut** : v0 (2026-04-21). En cours de cadrage, rien n'est implémenté.
+**Statut** : v0.1.0 (2026-04-21). **Livré.** Toutes les itérations complétées.
+
+Bench warm sur `/var/benchmarks` (~1.07M files, 19 GB, Ryzen 7 5700G) :
+- walk `--type=f` : bc-seek 0.230s / find 1.599s (**6.9×**) / fd 0.263s (+14%)
+- name `*.c` : bc-seek 0.212s / find 1.896s (**8.9×**) / fd 0.224s (+5%)
+- size `+1M` : bc-seek 0.383s / find 3.095s (**8.1×**) / fd 0.620s (+38%)
+- Correctness : 100% match avec `find -type f` (1069096 files).
 **Objectif** : CLI de recherche de fichiers (`find`-like) plafonnant le hardware via walk parallèle 3-phases sur la stack bc-* moderne. Cible primaire : battre `find(1)` et rivaliser avec `fd` (Rust) sur corpus multi-100k fichiers.
 
 ---

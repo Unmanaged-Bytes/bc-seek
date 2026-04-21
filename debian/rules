@@ -1,0 +1,14 @@
+#!/usr/bin/make -f
+
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+
+%:
+	dh $@ --buildsystem=meson
+
+override_dh_auto_configure:
+	dh_auto_configure -- \
+		--buildtype=release \
+		-Dtests=false
+
+override_dh_auto_test:
+	# Tests run in CI on debug builds; release package skip.

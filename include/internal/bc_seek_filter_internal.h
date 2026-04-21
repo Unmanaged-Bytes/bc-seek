@@ -40,6 +40,7 @@ typedef struct bc_seek_predicate {
 
     bool include_hidden;
     bool respect_ignore_defaults;
+    bool follow_symlinks;
 
     bool require_stat;
     time_t evaluation_reference_time;
@@ -57,6 +58,7 @@ typedef struct bc_seek_candidate {
     time_t modification_time;
     unsigned int permission_mask;
     bool stat_populated;
+    bool follow_symlinks_enabled;
     int parent_directory_fd;
 } bc_seek_candidate_t;
 

@@ -404,6 +404,34 @@ static void split_lines_sorted(char* buffer, size_t length, char*** out_lines, s
     *out_count = line_count;
 }
 
+static void test_walk_follow_symlinks(void** state)
+{
+    tree_fixture_t* fixture = *state;
+    char link_path[512];
+    snprintf(link_path, sizeof(link_path), "%s/sub_link", fixture->root);
+    char target_path[512];
+    snprintf(target_path, sizeof(target_path), "%s/sub", fixture->root);
+    if (symlink(target_path, link_path) != 0) {
+        skip();
+    }
+
+    char* const without[] = {(char*)BC_SEEK_TEST_BINARY_PATH, "find", "--type=f", fixture->root, NULL};
+    command_result_t result_without;
+    assert_true(run_capture(without, &result_without));
+    assert_int_equal(result_without.exit_code, 0);
+    assert_false(buffer_contains_path(result_without.stdout_buffer, result_without.stdout_length, "sub_link/alpha.c"));
+    command_result_free(&result_without);
+
+    char* const with[] = {(char*)BC_SEEK_TEST_BINARY_PATH, "find", "--follow-symlinks", "--type=f", fixture->root, NULL};
+    command_result_t result_with;
+    assert_true(run_capture(with, &result_with));
+    assert_int_equal(result_with.exit_code, 0);
+    assert_true(buffer_contains_path(result_with.stdout_buffer, result_with.stdout_length, "sub_link/alpha.c"));
+    command_result_free(&result_with);
+
+    unlink(link_path);
+}
+
 static void test_walk_mono_equals_parallel(void** state)
 {
     tree_fixture_t* fixture = *state;
@@ -448,6 +476,7 @@ int main(void)
         cmocka_unit_test_setup_teardown(test_walk_null_terminated, tree_setup, tree_teardown),
         cmocka_unit_test_setup_teardown(test_walk_no_ignore, tree_setup, tree_teardown),
         cmocka_unit_test_setup_teardown(test_walk_mono_thread, tree_setup, tree_teardown),
+        cmocka_unit_test_setup_teardown(test_walk_follow_symlinks, tree_setup, tree_teardown),
         cmocka_unit_test_setup_teardown(test_walk_mono_equals_parallel, tree_setup, tree_teardown),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);

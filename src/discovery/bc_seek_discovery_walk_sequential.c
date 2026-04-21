@@ -209,6 +209,7 @@ static bool bc_seek_walk_iterate_entries(bc_seek_walk_context_t* context, int di
         candidate.depth = depth + 1u;
         candidate.entry_type = entry_type;
         candidate.type_resolved = type_resolved;
+        candidate.follow_symlinks_enabled = context->follow_symlinks;
         candidate.parent_directory_fd = directory_fd;
 
         if (!bc_seek_walk_emit_if_match(context, &candidate)) {
@@ -217,7 +218,7 @@ static bool bc_seek_walk_iterate_entries(bc_seek_walk_context_t* context, int di
         }
 
         bool is_directory = candidate.type_resolved && candidate.entry_type == BC_SEEK_ENTRY_TYPE_DIRECTORY;
-        if (!candidate.type_resolved) {
+        if (!candidate.type_resolved || (context->follow_symlinks && candidate.entry_type == BC_SEEK_ENTRY_TYPE_SYMLINK)) {
             if (bc_seek_filter_populate_stat(&candidate)) {
                 is_directory = candidate.entry_type == BC_SEEK_ENTRY_TYPE_DIRECTORY;
             }
