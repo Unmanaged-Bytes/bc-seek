@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "bc_seek_byte_buffer_internal.h"
-#include "bc_seek_dirent_internal.h"
+#include "bc_io_dirent_reader.h"
 #include "bc_seek_discovery_internal.h"
 #include "bc_seek_filter_internal.h"
 
@@ -210,16 +210,16 @@ static void bc_seek_parallel_process_directory(bc_seek_parallel_shared_t* shared
     bc_core_copy(child_path_buffer, directory_path, directory_path_length);
     child_path_buffer[directory_path_length] = '\0';
 
-    bc_seek_dirent_reader_t reader;
-    bc_seek_dirent_reader_init(&reader, directory_file_descriptor);
+    bc_io_dirent_reader_t reader;
+    bc_io_dirent_reader_init(&reader, directory_file_descriptor);
 
     for (;;) {
         if (bc_seek_parallel_should_stop(shared)) {
             break;
         }
-        bc_seek_dirent_entry_t dir_entry;
+        bc_io_dirent_entry_t dir_entry;
         bool has_entry = false;
-        if (!bc_seek_dirent_reader_next(&reader, &dir_entry, &has_entry)) {
+        if (!bc_io_dirent_reader_next(&reader, &dir_entry, &has_entry)) {
             bc_seek_parallel_record_error(shared->errors, directory_path, reader.last_errno);
             break;
         }
