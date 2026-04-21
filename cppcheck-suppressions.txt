@@ -8,4 +8,5 @@ checkersReport
 unmatchedSuppression
 // test fixtures alias `void** state` to a typed pointer; mutation happens
 // inside teardown/test bodies but cppcheck doesn't always follow it.
+constVariablePointer:*tests/*.c
 constVariablePointer:*/tests/*.c
