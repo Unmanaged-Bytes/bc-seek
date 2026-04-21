@@ -32,13 +32,6 @@ test_bc_seek_filter_unit = executable('test_bc_seek_filter_unit',
 )
 test('bc_seek_filter_unit', test_bc_seek_filter_unit)
 
-test_bc_seek_error_unit = executable('test_bc_seek_error_unit',
-  'test_bc_seek_error_unit.c',
-  '../src/error/bc_seek_error_collector.c',
-  include_directories : [bc_seek_internal_inc],
-  dependencies : [cmocka_dep, bc_core_dep, bc_allocators_dep, bc_containers_dep],
-)
-test('bc_seek_error_unit', test_bc_seek_error_unit)
 
 test_bc_seek_end_to_end = executable('test_bc_seek_end_to_end',
   'test_bc_seek_end_to_end.c',

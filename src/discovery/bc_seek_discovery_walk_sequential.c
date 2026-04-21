@@ -22,7 +22,8 @@
 typedef struct bc_seek_walk_context {
     const bc_seek_predicate_t* predicate;
     bc_seek_output_t* output;
-    bc_seek_error_collector_t* errors;
+    bc_runtime_error_collector_t* errors;
+    bc_allocators_context_t* memory_context;
     const bc_concurrency_signal_handler_t* signal_handler;
     bool follow_symlinks;
     bool one_file_system;
@@ -160,7 +161,7 @@ static bool bc_seek_walk_iterate_entries(bc_seek_walk_context_t* context, int di
         bc_io_dirent_entry_t entry;
         bool has_entry = false;
         if (!bc_io_dirent_reader_next(&reader, &entry, &has_entry)) {
-            bc_seek_error_collector_append(context->errors, path_buffer, reader.last_errno);
+            bc_runtime_error_collector_append(context->errors, context->memory_context, path_buffer, NULL, reader.last_errno);
             ok = false;
             break;
         }
@@ -208,7 +209,7 @@ static bool bc_seek_walk_iterate_entries(bc_seek_walk_context_t* context, int di
         if (is_directory && bc_seek_walk_should_descend_directory(context, entry.name, entry.name_length, candidate.depth)) {
             int subdir_fd = -1;
             if (!bc_seek_walk_open_subdir(context, directory_fd, entry.name, &subdir_fd)) {
-                bc_seek_error_collector_append(context->errors, path_buffer, errno);
+                bc_runtime_error_collector_append(context->errors, context->memory_context, path_buffer, NULL, errno);
             } else {
                 bool recurse_ok = bc_seek_walk_process_directory(context, subdir_fd, path_buffer, path_length, candidate.depth);
                 close(subdir_fd);
@@ -238,7 +239,7 @@ static bool bc_seek_walk_visit_root(bc_seek_walk_context_t* context, const char*
     int open_flags = O_RDONLY | O_CLOEXEC;
     int stat_flags = context->follow_symlinks ? 0 : AT_SYMLINK_NOFOLLOW;
     if (fstatat(AT_FDCWD, root_path, &root_stat, stat_flags) != 0) {
-        bc_seek_error_collector_append(context->errors, root_path, errno);
+        bc_runtime_error_collector_append(context->errors, context->memory_context, root_path, NULL, errno);
         return false;
     }
 
@@ -259,11 +260,11 @@ static bool bc_seek_walk_visit_root(bc_seek_walk_context_t* context, const char*
     char path_buffer[BC_SEEK_DISCOVERY_PATH_CAPACITY];
     size_t path_length = 0;
     if (!bc_core_length(root_path, '\0', &path_length)) {
-        bc_seek_error_collector_append(context->errors, root_path, EINVAL);
+        bc_runtime_error_collector_append(context->errors, context->memory_context, root_path, NULL, EINVAL);
         return false;
     }
     if (path_length >= sizeof(path_buffer)) {
-        bc_seek_error_collector_append(context->errors, root_path, ENAMETOOLONG);
+        bc_runtime_error_collector_append(context->errors, context->memory_context, root_path, NULL, ENAMETOOLONG);
         return false;
     }
     bc_core_copy(path_buffer, root_path, path_length);
@@ -309,7 +310,7 @@ static bool bc_seek_walk_visit_root(bc_seek_walk_context_t* context, const char*
     open_flags |= O_DIRECTORY;
     int root_fd = openat(AT_FDCWD, root_path, open_flags);
     if (root_fd < 0) {
-        bc_seek_error_collector_append(context->errors, root_path, errno);
+        bc_runtime_error_collector_append(context->errors, context->memory_context, root_path, NULL, errno);
         return false;
     }
     bool walk_ok = bc_seek_walk_process_directory(context, root_fd, path_buffer, path_length, 0);
@@ -319,7 +320,7 @@ static bool bc_seek_walk_visit_root(bc_seek_walk_context_t* context, const char*
 
 bool bc_seek_discovery_walk_sequential(bc_allocators_context_t* memory_context, const bc_seek_predicate_t* predicate,
                                        const char* const* root_paths, size_t root_count, bool follow_symlinks, bool one_file_system,
-                                       bc_seek_output_t* output, bc_seek_error_collector_t* errors,
+                                       bc_seek_output_t* output, bc_runtime_error_collector_t* errors,
                                        const bc_concurrency_signal_handler_t* signal_handler)
 {
     BC_UNUSED(memory_context);
@@ -327,6 +328,7 @@ bool bc_seek_discovery_walk_sequential(bc_allocators_context_t* memory_context, 
     bc_seek_walk_context_t context;
     bc_core_zero(&context, sizeof(context));
     context.predicate = predicate;
+    context.memory_context = memory_context;
     context.output = output;
     context.errors = errors;
     context.signal_handler = signal_handler;

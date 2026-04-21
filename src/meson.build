@@ -8,7 +8,6 @@ bc_seek_sources = [
   'discovery/bc_seek_discovery_walk_parallel.c',
   'filter/bc_seek_filter.c',
   'output/bc_seek_output.c',
-  'error/bc_seek_error_collector.c',
   'strings/bc_seek_strings.c',
 ]
 

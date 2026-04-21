@@ -2,7 +2,7 @@
 
 #include "bc_seek_cli_internal.h"
 #include "bc_seek_discovery_internal.h"
-#include "bc_seek_error_internal.h"
+#include "bc_runtime_error_collector.h"
 #include "bc_seek_filter_internal.h"
 #include "bc_seek_output_internal.h"
 #include "bc_seek_types_internal.h"
@@ -22,7 +22,7 @@ typedef struct bc_seek_application_state {
     bc_seek_predicate_t predicate;
     bc_seek_output_t output;
     bool output_opened;
-    bc_seek_error_collector_t* errors;
+    bc_runtime_error_collector_t* errors;
     int exit_code;
 } bc_seek_application_state_t;
 
@@ -36,7 +36,7 @@ static bool bc_seek_application_init(const bc_runtime_t* application, void* user
         return false;
     }
 
-    if (!bc_seek_error_collector_create(memory_context, &state->errors)) {
+    if (!bc_runtime_error_collector_create(memory_context, &state->errors)) {
         state->exit_code = 1;
         return false;
     }
@@ -101,17 +101,17 @@ static bool bc_seek_application_run(const bc_runtime_t* application, void* user_
     bc_runtime_should_stop(application, &interrupted);
     if (interrupted) {
         state->exit_code = 130;
-        bc_seek_error_collector_flush_to_stderr(state->errors);
+        bc_runtime_error_collector_flush_to_stderr(state->errors, "bc-seek");
         return false;
     }
 
-    bc_seek_error_collector_flush_to_stderr(state->errors);
+    bc_runtime_error_collector_flush_to_stderr(state->errors, "bc-seek");
 
-    if (!walk_ok && bc_seek_error_collector_count(state->errors) == 0) {
+    if (!walk_ok && bc_runtime_error_collector_count(state->errors) == 0) {
         state->exit_code = 1;
         return false;
     }
-    state->exit_code = bc_seek_error_collector_count(state->errors) == 0 ? 0 : 1;
+    state->exit_code = bc_runtime_error_collector_count(state->errors) == 0 ? 0 : 1;
     return true;
 }
 
@@ -129,7 +129,7 @@ static void bc_seek_application_cleanup(const bc_runtime_t* application, void* u
         return;
     }
     if (state->errors != NULL) {
-        bc_seek_error_collector_destroy(memory_context, state->errors);
+        bc_runtime_error_collector_destroy(memory_context, state->errors);
         state->errors = NULL;
     }
 }
