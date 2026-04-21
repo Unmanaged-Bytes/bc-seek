@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: MIT
 
-#include "bc_seek_byte_buffer_internal.h"
 #include "bc_io_dirent_reader.h"
 #include "bc_seek_discovery_internal.h"
 #include "bc_seek_filter_internal.h"
 
 #include "bc_allocators.h"
 #include "bc_allocators_pool.h"
+#include "bc_allocators_typed_array.h"
 #include "bc_concurrency.h"
 #include "bc_concurrency_signal.h"
 #include "bc_core.h"
+
+BC_TYPED_ARRAY_DEFINE(char, bc_seek_output_bytes)
 
 #include <dirent.h>
 #include <errno.h>
@@ -39,10 +41,10 @@ typedef struct bc_seek_parallel_queue_entry {
 } bc_seek_parallel_queue_entry_t;
 
 typedef struct bc_seek_parallel_worker_slot {
-    bc_seek_byte_buffer_t output_bytes;
+    bc_seek_output_bytes_t output_bytes;
     size_t emitted_count;
     bool initialized;
-    char cache_line_padding[BC_CACHE_LINE_SIZE - ((sizeof(bc_seek_byte_buffer_t) + sizeof(size_t) + sizeof(bool)) % BC_CACHE_LINE_SIZE)];
+    char cache_line_padding[BC_CACHE_LINE_SIZE - ((sizeof(bc_seek_output_bytes_t) + sizeof(size_t) + sizeof(bool)) % BC_CACHE_LINE_SIZE)];
 } bc_seek_parallel_worker_slot_t;
 
 typedef struct bc_seek_parallel_shared {
@@ -52,7 +54,7 @@ typedef struct bc_seek_parallel_shared {
     const bc_concurrency_signal_handler_t* signal_handler;
     const bc_seek_predicate_t* predicate;
     bc_seek_error_collector_t* errors;
-    bc_seek_byte_buffer_t main_output_buffer;
+    bc_seek_output_bytes_t main_output_buffer;
     size_t main_emitted_count;
     char output_separator;
     bool follow_symlinks;
@@ -74,13 +76,13 @@ static bool bc_seek_parallel_should_stop(const bc_seek_parallel_shared_t* shared
     return should_stop;
 }
 
-static bool bc_seek_parallel_append_match(bc_allocators_context_t* memory_context, bc_seek_byte_buffer_t* buffer, const char* path,
+static bool bc_seek_parallel_append_match(bc_allocators_context_t* memory_context, bc_seek_output_bytes_t* buffer, const char* path,
                                           size_t path_length, char separator)
 {
-    if (!bc_seek_byte_buffer_append(memory_context, buffer, path, path_length)) {
+    if (!bc_seek_output_bytes_append_bulk(memory_context, buffer, path, path_length)) {
         return false;
     }
-    if (!bc_seek_byte_buffer_append_byte(memory_context, buffer, separator)) {
+    if (!bc_seek_output_bytes_push(memory_context, buffer, separator)) {
         return false;
     }
     return true;
@@ -94,7 +96,7 @@ static bool bc_seek_parallel_ensure_worker_slot(const bc_seek_parallel_shared_t*
         return false;
     }
     if (!slot->initialized) {
-        if (!bc_seek_byte_buffer_reserve(worker_memory, &slot->output_bytes, BC_SEEK_PARALLEL_OUTPUT_INITIAL_CAPACITY)) {
+        if (!bc_seek_output_bytes_reserve(worker_memory, &slot->output_bytes, BC_SEEK_PARALLEL_OUTPUT_INITIAL_CAPACITY)) {
             return false;
         }
         slot->initialized = true;
@@ -501,13 +503,13 @@ bool bc_seek_discovery_walk_parallel(bc_allocators_context_t* memory_context, bc
     atomic_store_explicit(&shared.outstanding_directory_count, 0, memory_order_relaxed);
     atomic_store_explicit(&shared.root_device_initialized, 0u, memory_order_relaxed);
 
-    if (!bc_seek_byte_buffer_reserve(memory_context, &shared.main_output_buffer, BC_SEEK_PARALLEL_OUTPUT_INITIAL_CAPACITY)) {
+    if (!bc_seek_output_bytes_reserve(memory_context, &shared.main_output_buffer, BC_SEEK_PARALLEL_OUTPUT_INITIAL_CAPACITY)) {
         return false;
     }
 
     if (!bc_concurrency_queue_create(memory_context, sizeof(bc_seek_parallel_queue_entry_t), BC_SEEK_PARALLEL_QUEUE_CAPACITY,
                                      &shared.directory_queue)) {
-        bc_seek_byte_buffer_destroy(memory_context, &shared.main_output_buffer);
+        bc_seek_output_bytes_destroy(memory_context, &shared.main_output_buffer);
         return false;
     }
 
@@ -519,7 +521,7 @@ bool bc_seek_discovery_walk_parallel(bc_allocators_context_t* memory_context, bc
     };
     if (!bc_concurrency_register_slot(concurrency_context, &slot_config, &shared.worker_slot_index)) {
         bc_concurrency_queue_destroy(shared.directory_queue);
-        bc_seek_byte_buffer_destroy(memory_context, &shared.main_output_buffer);
+        bc_seek_output_bytes_destroy(memory_context, &shared.main_output_buffer);
         return false;
     }
 
@@ -560,7 +562,7 @@ bool bc_seek_discovery_walk_parallel(bc_allocators_context_t* memory_context, bc
     }
     output->emitted_count += builder.total_emitted;
 
-    bc_seek_byte_buffer_destroy(memory_context, &shared.main_output_buffer);
+    bc_seek_output_bytes_destroy(memory_context, &shared.main_output_buffer);
     bc_concurrency_queue_destroy(shared.directory_queue);
 
     return any_root_ok && merge_ok;
