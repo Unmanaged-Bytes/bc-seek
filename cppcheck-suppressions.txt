@@ -1,0 +1,11 @@
+// SPDX-License-Identifier: MIT
+
+unusedFunction:*/bc_core_math.h
+preprocessorErrorDirective
+missingIncludeSystem:*
+normalCheckLevelMaxBranches:*
+checkersReport
+unmatchedSuppression
+// test fixtures alias `void** state` to a typed pointer; mutation happens
+// inside teardown/test bodies but cppcheck doesn't always follow it.
+constVariablePointer:*/tests/*.c

@@ -1,0 +1,2 @@
+option('tests', type : 'boolean', value : false, description : 'Build tests')
+option('arch',  type : 'string',  value : '',    description : 'Target architecture for -march (empty = x86-64-v3)')
