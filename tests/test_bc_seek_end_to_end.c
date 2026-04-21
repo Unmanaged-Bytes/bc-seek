@@ -436,7 +436,7 @@ static void test_walk_mono_equals_parallel(void** state)
 {
     tree_fixture_t* fixture = *state;
     char* const mono_argv[] = {(char*)BC_SEEK_TEST_BINARY_PATH, "--threads=0", "find", "--hidden", "--no-ignore", fixture->root, NULL};
-    char* const multi_argv[] = {(char*)BC_SEEK_TEST_BINARY_PATH, "--threads=4", "find", "--hidden", "--no-ignore", fixture->root, NULL};
+    char* const multi_argv[] = {(char*)BC_SEEK_TEST_BINARY_PATH, "--threads=auto", "find", "--hidden", "--no-ignore", fixture->root, NULL};
     command_result_t mono;
     command_result_t multi;
     assert_true(run_capture(mono_argv, &mono));
