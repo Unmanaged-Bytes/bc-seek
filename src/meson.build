@@ -6,6 +6,7 @@ bc_seek_sources = [
   'cli/bc_seek_cli_parsers.c',
   'discovery/bc_seek_discovery_walk_sequential.c',
   'discovery/bc_seek_discovery_walk_parallel.c',
+  'discovery/bc_seek_byte_buffer.c',
   'filter/bc_seek_filter.c',
   'output/bc_seek_output.c',
   'error/bc_seek_error_collector.c',

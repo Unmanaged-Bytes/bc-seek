@@ -372,6 +372,68 @@ static void test_walk_mono_thread(void** state)
     command_result_free(&result);
 }
 
+static int compare_c_strings(const void* left, const void* right)
+{
+    const char* left_value = *(const char* const*)left;
+    const char* right_value = *(const char* const*)right;
+    return strcmp(left_value, right_value);
+}
+
+static void split_lines_sorted(char* buffer, size_t length, char*** out_lines, size_t* out_count)
+{
+    size_t line_count = 0;
+    for (size_t index = 0; index < length; index++) {
+        if (buffer[index] == '\n') {
+            buffer[index] = '\0';
+            line_count += 1;
+        }
+    }
+    char** lines = test_calloc(line_count > 0 ? line_count : 1, sizeof(char*));
+    size_t cursor = 0;
+    size_t index = 0;
+    size_t start = 0;
+    while (index < length && cursor < line_count) {
+        if (buffer[index] == '\0') {
+            lines[cursor++] = buffer + start;
+            start = index + 1;
+        }
+        index += 1;
+    }
+    qsort(lines, line_count, sizeof(char*), compare_c_strings);
+    *out_lines = lines;
+    *out_count = line_count;
+}
+
+static void test_walk_mono_equals_parallel(void** state)
+{
+    tree_fixture_t* fixture = *state;
+    char* const mono_argv[] = {(char*)BC_SEEK_TEST_BINARY_PATH, "--threads=0", "find", "--hidden", "--no-ignore", fixture->root, NULL};
+    char* const multi_argv[] = {(char*)BC_SEEK_TEST_BINARY_PATH, "--threads=4", "find", "--hidden", "--no-ignore", fixture->root, NULL};
+    command_result_t mono;
+    command_result_t multi;
+    assert_true(run_capture(mono_argv, &mono));
+    assert_int_equal(mono.exit_code, 0);
+    assert_true(run_capture(multi_argv, &multi));
+    assert_int_equal(multi.exit_code, 0);
+
+    char** mono_lines = NULL;
+    size_t mono_count = 0u;
+    char** multi_lines = NULL;
+    size_t multi_count = 0u;
+    split_lines_sorted(mono.stdout_buffer, mono.stdout_length, &mono_lines, &mono_count);
+    split_lines_sorted(multi.stdout_buffer, multi.stdout_length, &multi_lines, &multi_count);
+
+    assert_int_equal(mono_count, multi_count);
+    for (size_t index = 0; index < mono_count; index++) {
+        assert_string_equal(mono_lines[index], multi_lines[index]);
+    }
+
+    test_free(mono_lines);
+    test_free(multi_lines);
+    command_result_free(&mono);
+    command_result_free(&multi);
+}
+
 int main(void)
 {
     const struct CMUnitTest tests[] = {
@@ -386,6 +448,7 @@ int main(void)
         cmocka_unit_test_setup_teardown(test_walk_null_terminated, tree_setup, tree_teardown),
         cmocka_unit_test_setup_teardown(test_walk_no_ignore, tree_setup, tree_teardown),
         cmocka_unit_test_setup_teardown(test_walk_mono_thread, tree_setup, tree_teardown),
+        cmocka_unit_test_setup_teardown(test_walk_mono_equals_parallel, tree_setup, tree_teardown),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }
