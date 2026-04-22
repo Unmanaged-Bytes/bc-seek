@@ -1,3 +1,16 @@
+bc-seek (1.1.0-1) stable; urgency=medium
+
+  * Promote to stable 1.x alongside the rest of the bc-* ecosystem.
+  * Add libFuzzer harness infrastructure under fuzzing/ with harnesses
+    for cli_parse (argv through bc_seek_cli_program_spec), filter_parsers
+    (--size / --mtime / --type / --perm / --threads values), and
+    glob_match (pattern matching with case-insensitive mode).
+  * Rebuilt against libbc-core 1.1.0 which carries the
+    count_lines_with_pattern shift-by-32 UB fix.
+  * No public CLI change.
+
+ -- Younes Benmoussa <younes.benmoussa@pm.me>  Wed, 22 Apr 2026 08:00:00 +0000
+
 bc-seek (0.1.1-1) stable; urgency=medium
 
   * Refactor: consume new public APIs from upstream libs (libbc-io 1.1.0
