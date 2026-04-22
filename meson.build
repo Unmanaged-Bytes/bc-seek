@@ -71,3 +71,7 @@ subdir('src')
 if get_option('tests')
   subdir('tests')
 endif
+
+if get_option('fuzzing')
+  subdir('fuzzing')
+endif
