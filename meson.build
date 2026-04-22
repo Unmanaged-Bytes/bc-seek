@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 project('bc-seek', 'c',
-  version : '0.1.1',
+  version : '1.1.0',
   license : 'MIT',
   default_options : [
     'c_std=c11',
