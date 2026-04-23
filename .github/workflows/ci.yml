@@ -62,3 +62,26 @@ jobs:
         run: |
           meson setup build/tsan --buildtype=debug -Dtests=true -Db_sanitize=thread
           meson test -C build/tsan --print-errorlogs
+
+      - name: Release build + test
+        run: |
+          meson setup build/release --buildtype=release -Dtests=true
+          meson compile -C build/release
+          meson test -C build/release --print-errorlogs
+
+      - name: Valgrind memcheck
+        run: |
+          meson setup build/memcheck --buildtype=debug -Dtests=true -Db_sanitize=none
+          meson compile -C build/memcheck
+          SUPP_FLAG=""
+          if [ -f valgrind.supp ]; then
+            SUPP_FLAG="--suppressions=$(pwd)/valgrind.supp"
+          fi
+          meson test -C build/memcheck --wrap="valgrind \
+            --error-exitcode=1 \
+            --leak-check=full \
+            --show-leak-kinds=definite,possible \
+            --track-origins=yes \
+            --num-callers=20 \
+            $SUPP_FLAG" \
+            --timeout-multiplier=20 --print-errorlogs
