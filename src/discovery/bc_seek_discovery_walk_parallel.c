@@ -60,7 +60,7 @@ typedef struct bc_seek_parallel_shared {
     bool follow_symlinks;
     bool one_file_system;
     _Atomic unsigned char root_device_initialized;
-    dev_t root_device;
+    _Atomic dev_t root_device;
 
     BC_CACHE_LINE_ALIGNED _Atomic int outstanding_directory_count;
     char outstanding_padding[BC_CACHE_LINE_SIZE - sizeof(_Atomic int)];
@@ -196,10 +196,14 @@ static void bc_seek_parallel_process_directory(bc_seek_parallel_shared_t* shared
             unsigned char expected = 0u;
             if (atomic_compare_exchange_strong_explicit(&shared->root_device_initialized, &expected, 1u, memory_order_acq_rel,
                                                         memory_order_acquire)) {
-                shared->root_device = dir_stat.st_dev;
-            } else if (dir_stat.st_dev != shared->root_device) {
-                close(directory_file_descriptor);
-                return;
+                atomic_store_explicit(&shared->root_device, dir_stat.st_dev, memory_order_release);
+            } else {
+                const dev_t observed_root =
+                    atomic_load_explicit(&shared->root_device, memory_order_acquire);
+                if (dir_stat.st_dev != observed_root) {
+                    close(directory_file_descriptor);
+                    return;
+                }
             }
         }
     }
@@ -420,7 +424,7 @@ static bool bc_seek_parallel_handle_root(bc_seek_parallel_shared_t* shared, cons
         unsigned char expected = 0u;
         if (atomic_compare_exchange_strong_explicit(&shared->root_device_initialized, &expected, 1u, memory_order_acq_rel,
                                                     memory_order_acquire)) {
-            shared->root_device = root_stat.st_dev;
+            atomic_store_explicit(&shared->root_device, root_stat.st_dev, memory_order_release);
         }
     }
 
