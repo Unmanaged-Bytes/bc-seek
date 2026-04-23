@@ -1,6 +1,14 @@
 // SPDX-License-Identifier: MIT
 
 unusedFunction:*/bc_core_math.h
+// BC_TYPED_ARRAY_DEFINE emits 10-odd `static inline __attribute__((unused))`
+// helpers at its invocation line. cppcheck 2.13 (Ubuntu 24.04 CI) does
+// not honour `__attribute__((unused))` on macro-expanded declarations
+// and reports every helper as unusedFunction. Suppress the file.
+// Mirror with and without the `*/` prefix because 2.13 does not treat
+// `*` as matching an empty leading segment.
+unusedFunction:*/discovery/bc_seek_discovery_walk_parallel.c
+unusedFunction:src/discovery/bc_seek_discovery_walk_parallel.c
 preprocessorErrorDirective
 missingIncludeSystem:*
 normalCheckLevelMaxBranches:*
