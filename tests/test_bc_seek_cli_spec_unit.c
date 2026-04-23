@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 #include <setjmp.h>
+#include <stdlib.h>
 #include <stdarg.h>
 #include <stddef.h>
 #include <cmocka.h>
