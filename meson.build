@@ -48,12 +48,12 @@ if get_option('buildtype') in ['release', 'minsize']
   add_project_link_arguments('-Wl,--gc-sections', language : 'c')
 endif
 
-bc_core_dep        = dependency('bc-core')
-bc_allocators_dep  = dependency('bc-allocators')
-bc_containers_dep  = dependency('bc-containers')
-bc_concurrency_dep = dependency('bc-concurrency')
-bc_io_dep          = dependency('bc-io')
-bc_runtime_dep     = dependency('bc-runtime')
+bc_core_dep        = dependency('bc-core',        version : '>= 1.3.0')
+bc_allocators_dep  = dependency('bc-allocators',  version : '>= 1.2.0')
+bc_containers_dep  = dependency('bc-containers',  version : '>= 1.1.0')
+bc_concurrency_dep = dependency('bc-concurrency', version : '>= 1.1.0')
+bc_io_dep          = dependency('bc-io',          version : '>= 1.1.0')
+bc_runtime_dep     = dependency('bc-runtime',     version : '>= 1.1.0')
 
 bc_seek_deps = [
   bc_core_dep,
