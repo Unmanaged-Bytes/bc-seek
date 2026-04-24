@@ -53,13 +53,12 @@ typedef struct bc_seek_parallel_context {
 static bool bc_seek_parallel_append_match(bc_allocators_context_t* memory_context, bc_seek_output_bytes_t* buffer, const char* path,
                                           size_t path_length, char separator)
 {
-    size_t needed = path_length + 1u;
-    if (!bc_seek_output_bytes_reserve(memory_context, buffer, buffer->length + needed)) {
+    if (!bc_seek_output_bytes_append_bulk(memory_context, buffer, path, path_length)) {
         return false;
     }
-    bc_core_copy(buffer->data + buffer->length, path, path_length);
-    buffer->data[buffer->length + path_length] = separator;
-    buffer->length += needed;
+    if (!bc_seek_output_bytes_push(memory_context, buffer, separator)) {
+        return false;
+    }
     return true;
 }
 
