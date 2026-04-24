@@ -10,3 +10,8 @@ core.*
 compile_commands.json
 .cache/
 .vscode/
+debian/.debhelper/
+debian/debhelper-build-stamp
+debian/files
+debian/bc-seek/
+debian/bc-seek.substvars
