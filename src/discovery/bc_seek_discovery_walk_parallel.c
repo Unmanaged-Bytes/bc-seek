@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: MIT
 
-#include "bc_io_dirent_reader.h"
 #include "bc_seek_discovery_internal.h"
 #include "bc_seek_filter_internal.h"
 
@@ -10,10 +9,10 @@
 #include "bc_concurrency.h"
 #include "bc_concurrency_signal.h"
 #include "bc_core.h"
+#include "bc_io_walk.h"
 
 BC_TYPED_ARRAY_DEFINE(char, bc_seek_output_bytes)
 
-#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -28,17 +27,9 @@ BC_TYPED_ARRAY_DEFINE(char, bc_seek_output_bytes)
 #include <sys/uio.h>
 #include <unistd.h>
 
-#define BC_SEEK_PARALLEL_PATH_CAPACITY ((size_t)4096)
-#define BC_SEEK_PARALLEL_QUEUE_CAPACITY ((size_t)16384)
 #define BC_SEEK_PARALLEL_OUTPUT_INITIAL_CAPACITY ((size_t)(64 * 1024))
 #define BC_SEEK_PARALLEL_OUTPUT_MAX_CAPACITY ((size_t)1U << 30)
-#define BC_SEEK_PARALLEL_TERMINATION_SPIN_PAUSES ((int)64)
-
-typedef struct bc_seek_parallel_queue_entry {
-    char absolute_path[BC_SEEK_PARALLEL_PATH_CAPACITY];
-    size_t absolute_path_length;
-    size_t depth;
-} bc_seek_parallel_queue_entry_t;
+#define BC_SEEK_PARALLEL_MAX_IOVEC ((size_t)256)
 
 typedef struct bc_seek_parallel_worker_slot {
     bc_seek_output_bytes_t output_bytes;
@@ -47,58 +38,45 @@ typedef struct bc_seek_parallel_worker_slot {
     char cache_line_padding[BC_CACHE_LINE_SIZE - ((sizeof(bc_seek_output_bytes_t) + sizeof(size_t) + sizeof(bool)) % BC_CACHE_LINE_SIZE)];
 } bc_seek_parallel_worker_slot_t;
 
-typedef struct bc_seek_parallel_shared {
-    bc_concurrency_queue_t* directory_queue;
+typedef struct bc_seek_parallel_context {
     size_t worker_slot_index;
     bc_allocators_context_t* main_memory_context;
-    const bc_concurrency_signal_handler_t* signal_handler;
-    const bc_seek_predicate_t* predicate;
     bc_runtime_error_collector_t* errors;
-    bc_seek_output_bytes_t main_output_buffer;
-    size_t main_emitted_count;
+    const bc_seek_predicate_t* predicate;
     char output_separator;
     bool follow_symlinks;
     bool one_file_system;
     _Atomic unsigned char root_device_initialized;
     _Atomic dev_t root_device;
-
-    BC_CACHE_LINE_ALIGNED _Atomic int outstanding_directory_count;
-    char outstanding_padding[BC_CACHE_LINE_SIZE - sizeof(_Atomic int)];
-} bc_seek_parallel_shared_t;
-
-static bool bc_seek_parallel_should_stop(const bc_seek_parallel_shared_t* shared)
-{
-    if (shared->signal_handler == NULL) {
-        return false;
-    }
-    bool should_stop = false;
-    bc_concurrency_signal_handler_should_stop(shared->signal_handler, &should_stop);
-    return should_stop;
-}
+} bc_seek_parallel_context_t;
 
 static bool bc_seek_parallel_append_match(bc_allocators_context_t* memory_context, bc_seek_output_bytes_t* buffer, const char* path,
                                           size_t path_length, char separator)
 {
-    if (!bc_seek_output_bytes_append_bulk(memory_context, buffer, path, path_length)) {
+    size_t needed = path_length + 1u;
+    if (!bc_seek_output_bytes_reserve(memory_context, buffer, buffer->length + needed)) {
         return false;
     }
-    if (!bc_seek_output_bytes_push(memory_context, buffer, separator)) {
-        return false;
-    }
+    bc_core_copy(buffer->data + buffer->length, path, path_length);
+    buffer->data[buffer->length + path_length] = separator;
+    buffer->length += needed;
     return true;
 }
 
-static bool bc_seek_parallel_ensure_worker_slot(const bc_seek_parallel_shared_t* shared, bc_allocators_context_t* worker_memory,
+static bool bc_seek_parallel_ensure_worker_slot(const bc_seek_parallel_context_t* context, bc_allocators_context_t* worker_memory,
                                                 bc_seek_parallel_worker_slot_t** out_slot)
 {
-    bc_seek_parallel_worker_slot_t* slot = (bc_seek_parallel_worker_slot_t*)bc_concurrency_worker_slot(shared->worker_slot_index);
+    bc_seek_parallel_worker_slot_t* slot =
+        (bc_seek_parallel_worker_slot_t*)bc_concurrency_worker_slot(context->worker_slot_index);
     if (slot == NULL) {
         return false;
     }
     if (!slot->initialized) {
+        bc_core_zero(&slot->output_bytes, sizeof(slot->output_bytes));
         if (!bc_seek_output_bytes_reserve(worker_memory, &slot->output_bytes, BC_SEEK_PARALLEL_OUTPUT_INITIAL_CAPACITY)) {
             return false;
         }
+        slot->emitted_count = 0u;
         slot->initialized = true;
     }
     *out_slot = slot;
@@ -108,242 +86,131 @@ static bool bc_seek_parallel_ensure_worker_slot(const bc_seek_parallel_shared_t*
 static void bc_seek_parallel_record_error(bc_runtime_error_collector_t* errors, bc_allocators_context_t* memory_context, const char* path,
                                           int errno_value)
 {
-    if (errors != NULL) {
-        bc_runtime_error_collector_append(errors, memory_context, path, NULL, errno_value);
-    }
+    (void)bc_runtime_error_collector_append(errors, memory_context, path, NULL, errno_value);
 }
 
 static bool bc_seek_parallel_is_hidden_name(const char* name)
 {
-    return name[0] == '.' && name[1] != '\0';
+    return name != NULL && name[0] == '.';
 }
 
-static bc_seek_entry_type_t bc_seek_parallel_type_from_dtype(unsigned char d_type, bool* out_resolved)
+static bc_seek_entry_type_t bc_seek_parallel_type_from_walk_kind(bc_io_walk_entry_kind_t kind)
 {
-    switch (d_type) {
-        case DT_REG:
-            *out_resolved = true;
-            return BC_SEEK_ENTRY_TYPE_FILE;
-        case DT_DIR:
-            *out_resolved = true;
-            return BC_SEEK_ENTRY_TYPE_DIRECTORY;
-        case DT_LNK:
-            *out_resolved = true;
-            return BC_SEEK_ENTRY_TYPE_SYMLINK;
-        case DT_UNKNOWN:
-        default:
-            *out_resolved = false;
-            return BC_SEEK_ENTRY_TYPE_ANY;
+    switch (kind) {
+    case BC_IO_WALK_ENTRY_FILE:
+        return BC_SEEK_ENTRY_TYPE_FILE;
+    case BC_IO_WALK_ENTRY_DIRECTORY:
+        return BC_SEEK_ENTRY_TYPE_DIRECTORY;
+    case BC_IO_WALK_ENTRY_SYMLINK:
+        return BC_SEEK_ENTRY_TYPE_SYMLINK;
+    case BC_IO_WALK_ENTRY_OTHER:
+    default:
+        return BC_SEEK_ENTRY_TYPE_ANY;
     }
 }
 
-static bool bc_seek_parallel_append_path(char* buffer, size_t buffer_capacity, size_t parent_length, const char* name, size_t name_length,
-                                         size_t* out_length)
+static const char* bc_seek_parallel_basename(const char* path, size_t path_length, size_t* out_length)
 {
-    bool needs_separator = parent_length > 0 && buffer[parent_length - 1] != '/';
-    size_t required = parent_length + (needs_separator ? 1u : 0u) + name_length + 1u;
-    if (required > buffer_capacity) {
-        return false;
+    size_t last_slash_offset = 0;
+    if (bc_core_find_last_byte(path, path_length, '/', &last_slash_offset)) {
+        const char* basename = path + last_slash_offset + 1;
+        *out_length = path_length - (size_t)(basename - path);
+        return basename;
     }
-    size_t cursor = parent_length;
-    if (needs_separator) {
-        buffer[cursor] = '/';
-        cursor += 1u;
-    }
-    bc_core_copy(buffer + cursor, name, name_length);
-    cursor += name_length;
-    buffer[cursor] = '\0';
-    *out_length = cursor;
-    return true;
+    *out_length = path_length;
+    return path;
 }
 
-static bool bc_seek_parallel_should_descend_directory(const bc_seek_parallel_shared_t* shared, const char* name, size_t name_length,
-                                                      size_t child_depth)
+/* cppcheck-suppress constParameterCallback; signature fixed by bc_io_walk_visit_fn */
+static bool bc_seek_parallel_visit(const bc_io_walk_entry_t* entry, void* user_data)
 {
-    if (shared->predicate->has_max_depth && child_depth > shared->predicate->max_depth) {
-        return false;
-    }
-    if (shared->predicate->respect_ignore_defaults && bc_seek_filter_ignored_directory_name(name, name_length)) {
-        return false;
-    }
-    if (!shared->predicate->include_hidden && bc_seek_parallel_is_hidden_name(name)) {
-        return false;
-    }
-    return true;
-}
+    bc_seek_parallel_context_t* context = (bc_seek_parallel_context_t*)user_data;
 
-static void bc_seek_parallel_enqueue_subdirectory(bc_seek_parallel_shared_t* shared, bc_allocators_context_t* worker_memory,
-                                                  bc_seek_parallel_worker_slot_t* worker_slot, const char* child_path, size_t child_path_length,
-                                                  size_t child_depth);
-
-static void bc_seek_parallel_process_directory(bc_seek_parallel_shared_t* shared, bc_allocators_context_t* worker_memory,
-                                               bc_seek_parallel_worker_slot_t* worker_slot, const char* directory_path,
-                                               size_t directory_path_length, size_t directory_depth)
-{
-    int open_flags = O_RDONLY | O_DIRECTORY | O_CLOEXEC;
-    if (!shared->follow_symlinks) {
-        open_flags |= O_NOFOLLOW;
-    }
-    int directory_file_descriptor = open(directory_path, open_flags);
-    if (directory_file_descriptor < 0) {
-        bc_seek_parallel_record_error(shared->errors, shared->main_memory_context, directory_path, errno);
-        return;
-    }
-
-    if (shared->one_file_system) {
-        struct stat dir_stat;
-        if (fstat(directory_file_descriptor, &dir_stat) == 0) {
-            unsigned char expected = 0u;
-            if (atomic_compare_exchange_strong_explicit(&shared->root_device_initialized, &expected, 1u, memory_order_acq_rel,
-                                                        memory_order_acquire)) {
-                atomic_store_explicit(&shared->root_device, dir_stat.st_dev, memory_order_release);
-            } else {
-                const dev_t observed_root =
-                    atomic_load_explicit(&shared->root_device, memory_order_acquire);
-                if (dir_stat.st_dev != observed_root) {
-                    close(directory_file_descriptor);
-                    return;
-                }
-            }
+    if (context->one_file_system) {
+        dev_t expected_root = atomic_load_explicit(&context->root_device, memory_order_acquire);
+        if (atomic_load_explicit(&context->root_device_initialized, memory_order_acquire) == 1u
+            && entry->device_id != expected_root) {
+            return true;
         }
     }
 
-    char child_path_buffer[BC_SEEK_PARALLEL_PATH_CAPACITY];
-    if (directory_path_length >= sizeof(child_path_buffer)) {
-        close(directory_file_descriptor);
-        bc_seek_parallel_record_error(shared->errors, shared->main_memory_context, directory_path, ENAMETOOLONG);
-        return;
-    }
-    bc_core_copy(child_path_buffer, directory_path, directory_path_length);
-    child_path_buffer[directory_path_length] = '\0';
-
-    bc_io_dirent_reader_t reader;
-    bc_io_dirent_reader_init(&reader, directory_file_descriptor);
-
-    for (;;) {
-        if (bc_seek_parallel_should_stop(shared)) {
-            break;
-        }
-        bc_io_dirent_entry_t dir_entry;
-        bool has_entry = false;
-        if (!bc_io_dirent_reader_next(&reader, &dir_entry, &has_entry)) {
-            bc_seek_parallel_record_error(shared->errors, shared->main_memory_context, directory_path, reader.last_errno);
-            break;
-        }
-        if (!has_entry) {
-            break;
-        }
-        const char* entry_name = dir_entry.name;
-        if (!shared->predicate->include_hidden && bc_seek_parallel_is_hidden_name(entry_name)) {
-            continue;
-        }
-
-        size_t entry_name_length = dir_entry.name_length;
-        size_t child_path_length = 0;
-        if (!bc_seek_parallel_append_path(child_path_buffer, sizeof(child_path_buffer), directory_path_length, entry_name, entry_name_length,
-                                          &child_path_length)) {
-            bc_seek_parallel_record_error(shared->errors, shared->main_memory_context, directory_path, ENAMETOOLONG);
-            continue;
-        }
-
-        bool type_resolved = false;
-        bc_seek_entry_type_t entry_type = bc_seek_parallel_type_from_dtype(dir_entry.d_type, &type_resolved);
-
-        bc_seek_candidate_t candidate;
-        bc_core_zero(&candidate, sizeof(candidate));
-        candidate.path = child_path_buffer;
-        candidate.path_length = child_path_length;
-        candidate.basename = child_path_buffer + child_path_length - entry_name_length;
-        candidate.basename_length = entry_name_length;
-        candidate.depth = directory_depth + 1u;
-        candidate.entry_type = entry_type;
-        candidate.type_resolved = type_resolved;
-        candidate.follow_symlinks_enabled = shared->follow_symlinks;
-        candidate.parent_directory_fd = directory_file_descriptor;
-
-        bc_seek_filter_decision_t decision = bc_seek_filter_evaluate(shared->predicate, &candidate);
-        if (decision == BC_SEEK_FILTER_DECISION_ACCEPT) {
-            if (!bc_seek_parallel_append_match(worker_memory, &worker_slot->output_bytes, child_path_buffer, child_path_length,
-                                               shared->output_separator)) {
-                bc_seek_parallel_record_error(shared->errors, shared->main_memory_context, child_path_buffer, ENOMEM);
-            } else {
-                worker_slot->emitted_count += 1u;
-            }
-        }
-
-        bool is_directory = candidate.type_resolved && candidate.entry_type == BC_SEEK_ENTRY_TYPE_DIRECTORY;
-        if (!candidate.type_resolved || (shared->follow_symlinks && candidate.entry_type == BC_SEEK_ENTRY_TYPE_SYMLINK)) {
-            if (bc_seek_filter_populate_stat(&candidate)) {
-                is_directory = candidate.entry_type == BC_SEEK_ENTRY_TYPE_DIRECTORY;
-            }
-        }
-
-        if (is_directory && bc_seek_parallel_should_descend_directory(shared, entry_name, entry_name_length, candidate.depth)) {
-            bc_seek_parallel_enqueue_subdirectory(shared, worker_memory, worker_slot, child_path_buffer, child_path_length, candidate.depth);
-        }
-
-        child_path_buffer[directory_path_length] = '\0';
-    }
-
-    close(directory_file_descriptor);
-}
-
-static void bc_seek_parallel_enqueue_subdirectory(bc_seek_parallel_shared_t* shared, bc_allocators_context_t* worker_memory,
-                                                  bc_seek_parallel_worker_slot_t* worker_slot, const char* child_path, size_t child_path_length,
-                                                  size_t child_depth)
-{
-    bc_seek_parallel_queue_entry_t queue_entry;
-    bc_core_zero(&queue_entry, sizeof(queue_entry));
-    if (child_path_length >= sizeof(queue_entry.absolute_path)) {
-        bc_seek_parallel_record_error(shared->errors, shared->main_memory_context, child_path, ENAMETOOLONG);
-        return;
-    }
-    memcpy(queue_entry.absolute_path, child_path, child_path_length);
-    queue_entry.absolute_path[child_path_length] = '\0';
-    queue_entry.absolute_path_length = child_path_length;
-    queue_entry.depth = child_depth;
-
-    atomic_fetch_add_explicit(&shared->outstanding_directory_count, 1, memory_order_relaxed);
-    if (!bc_concurrency_queue_push(shared->directory_queue, &queue_entry)) {
-        atomic_fetch_sub_explicit(&shared->outstanding_directory_count, 1, memory_order_relaxed);
-        bc_seek_parallel_process_directory(shared, worker_memory, worker_slot, child_path, child_path_length, child_depth);
-    }
-}
-
-static void bc_seek_parallel_worker_task(void* task_argument)
-{
-    bc_seek_parallel_shared_t* shared = (bc_seek_parallel_shared_t*)task_argument;
     bc_allocators_context_t* worker_memory = bc_concurrency_worker_memory();
     if (worker_memory == NULL) {
-        worker_memory = shared->main_memory_context;
-    }
-    bc_seek_parallel_worker_slot_t* worker_slot = NULL;
-    if (!bc_seek_parallel_ensure_worker_slot(shared, worker_memory, &worker_slot)) {
-        return;
+        worker_memory = context->main_memory_context;
     }
 
-    for (;;) {
-        if (bc_seek_parallel_should_stop(shared)) {
-            return;
-        }
-        bc_seek_parallel_queue_entry_t queue_entry;
-        if (bc_concurrency_queue_pop(shared->directory_queue, &queue_entry)) {
-            bc_seek_parallel_process_directory(shared, worker_memory, worker_slot, queue_entry.absolute_path,
-                                               queue_entry.absolute_path_length, queue_entry.depth);
-            atomic_fetch_sub_explicit(&shared->outstanding_directory_count, 1, memory_order_release);
-            continue;
-        }
-        int outstanding = atomic_load_explicit(&shared->outstanding_directory_count, memory_order_acquire);
-        if (outstanding == 0) {
-            return;
-        }
-        for (int spin = 0; spin < BC_SEEK_PARALLEL_TERMINATION_SPIN_PAUSES; ++spin) {
-            bc_core_spin_pause();
-        }
+    bc_seek_parallel_worker_slot_t* slot = NULL;
+    if (!bc_seek_parallel_ensure_worker_slot(context, worker_memory, &slot)) {
+        return false;
     }
+
+    size_t basename_length = 0;
+    const char* basename = bc_seek_parallel_basename(entry->absolute_path, entry->absolute_path_length, &basename_length);
+
+    bc_seek_candidate_t candidate;
+    bc_core_zero(&candidate, sizeof(candidate));
+    candidate.path = entry->absolute_path;
+    candidate.path_length = entry->absolute_path_length;
+    candidate.basename = basename;
+    candidate.basename_length = basename_length;
+    candidate.depth = entry->depth;
+    candidate.entry_type = bc_seek_parallel_type_from_walk_kind(entry->kind);
+    candidate.type_resolved = candidate.entry_type != BC_SEEK_ENTRY_TYPE_ANY;
+    candidate.size_bytes = (uint64_t)entry->file_size;
+    candidate.modification_time = (time_t)entry->modification_time_seconds;
+    candidate.permission_mask = entry->permission_mask;
+    candidate.stat_populated = entry->stat_populated;
+    candidate.follow_symlinks_enabled = context->follow_symlinks;
+    candidate.parent_directory_fd = AT_FDCWD;
+
+    bc_seek_filter_decision_t decision = bc_seek_filter_evaluate(context->predicate, &candidate);
+    if (decision != BC_SEEK_FILTER_DECISION_ACCEPT) {
+        return true;
+    }
+
+    if (!bc_seek_parallel_append_match(worker_memory, &slot->output_bytes, entry->absolute_path, entry->absolute_path_length,
+                                       context->output_separator)) {
+        bc_seek_parallel_record_error(context->errors, context->main_memory_context, entry->absolute_path, ENOMEM);
+        return true;
+    }
+    slot->emitted_count += 1u;
+    return true;
 }
 
-#define BC_SEEK_PARALLEL_MAX_IOVEC ((size_t)256)
+/* cppcheck-suppress constParameterCallback; signature fixed by bc_io_walk_should_descend_fn */
+static bool bc_seek_parallel_should_descend(const bc_io_walk_entry_t* entry, void* user_data)
+{
+    const bc_seek_parallel_context_t* context = (const bc_seek_parallel_context_t*)user_data;
+
+    if (context->predicate->has_max_depth && entry->depth >= context->predicate->max_depth) {
+        return false;
+    }
+
+    size_t basename_length = 0;
+    const char* basename = bc_seek_parallel_basename(entry->absolute_path, entry->absolute_path_length, &basename_length);
+
+    if (context->predicate->respect_ignore_defaults && bc_seek_filter_ignored_directory_name(basename, basename_length)) {
+        return false;
+    }
+    if (!context->predicate->include_hidden && bc_seek_parallel_is_hidden_name(basename)) {
+        return false;
+    }
+
+    if (context->one_file_system
+        && atomic_load_explicit(&context->root_device_initialized, memory_order_acquire) == 1u
+        && entry->device_id != atomic_load_explicit(&context->root_device, memory_order_acquire)) {
+        return false;
+    }
+    return true;
+}
+
+/* cppcheck-suppress constParameterCallback; signature fixed by bc_io_walk_error_fn */
+static void bc_seek_parallel_on_error(const char* path, const char* stage, int errno_value, void* user_data)
+{
+    (void)stage;
+    const bc_seek_parallel_context_t* context = (const bc_seek_parallel_context_t*)user_data;
+    bc_seek_parallel_record_error(context->errors, context->main_memory_context, path, errno_value);
+}
 
 typedef struct bc_seek_parallel_iovec_builder {
     struct iovec iov[BC_SEEK_PARALLEL_MAX_IOVEC];
@@ -393,18 +260,27 @@ static bool bc_seek_parallel_write_all_iovec(int fd, struct iovec* iov, size_t c
     return true;
 }
 
-static bool bc_seek_parallel_handle_root(bc_seek_parallel_shared_t* shared, const char* root_path)
+typedef struct bc_seek_parallel_root_result {
+    bc_seek_output_bytes_t main_output_buffer;
+    size_t main_emitted_count;
+} bc_seek_parallel_root_result_t;
+
+static bool bc_seek_parallel_handle_root(bc_seek_parallel_context_t* context, bc_allocators_context_t* memory_context,
+                                         bc_concurrency_context_t* concurrency_context,
+                                         bc_concurrency_signal_handler_t* signal_handler,
+                                         bc_seek_parallel_root_result_t* root_result,
+                                         const char* root_path)
 {
     struct stat root_stat;
-    int stat_flags = shared->follow_symlinks ? 0 : AT_SYMLINK_NOFOLLOW;
+    int stat_flags = context->follow_symlinks ? 0 : AT_SYMLINK_NOFOLLOW;
     if (fstatat(AT_FDCWD, root_path, &root_stat, stat_flags) != 0) {
-        bc_seek_parallel_record_error(shared->errors, shared->main_memory_context, root_path, errno);
+        bc_seek_parallel_record_error(context->errors, memory_context, root_path, errno);
         return false;
     }
 
     size_t root_path_length = 0;
     if (!bc_core_length(root_path, '\0', &root_path_length)) {
-        bc_seek_parallel_record_error(shared->errors, shared->main_memory_context, root_path, EINVAL);
+        bc_seek_parallel_record_error(context->errors, memory_context, root_path, EINVAL);
         return false;
     }
     while (root_path_length > 1 && root_path[root_path_length - 1] == '/') {
@@ -420,25 +296,23 @@ static bool bc_seek_parallel_handle_root(bc_seek_parallel_shared_t* shared, cons
         root_type = BC_SEEK_ENTRY_TYPE_SYMLINK;
     }
 
-    if (shared->one_file_system) {
+    if (context->one_file_system) {
         unsigned char expected = 0u;
-        if (atomic_compare_exchange_strong_explicit(&shared->root_device_initialized, &expected, 1u, memory_order_acq_rel,
+        if (atomic_compare_exchange_strong_explicit(&context->root_device_initialized, &expected, 1u, memory_order_acq_rel,
                                                     memory_order_acquire)) {
-            atomic_store_explicit(&shared->root_device, root_stat.st_dev, memory_order_release);
+            atomic_store_explicit(&context->root_device, root_stat.st_dev, memory_order_release);
         }
     }
+
+    size_t basename_length = 0;
+    const char* basename = bc_seek_parallel_basename(root_path, root_path_length, &basename_length);
 
     bc_seek_candidate_t root_candidate;
     bc_core_zero(&root_candidate, sizeof(root_candidate));
     root_candidate.path = root_path;
     root_candidate.path_length = root_path_length;
-    const char* basename_pointer = root_path;
-    size_t last_slash_offset = 0;
-    if (bc_core_find_last_byte(root_path, root_path_length, '/', &last_slash_offset)) {
-        basename_pointer = root_path + last_slash_offset + 1;
-    }
-    root_candidate.basename = basename_pointer;
-    root_candidate.basename_length = root_path_length - (size_t)(basename_pointer - root_path);
+    root_candidate.basename = basename;
+    root_candidate.basename_length = basename_length;
     root_candidate.depth = 0u;
     root_candidate.entry_type = root_type;
     root_candidate.type_resolved = root_type != BC_SEEK_ENTRY_TYPE_ANY;
@@ -448,41 +322,43 @@ static bool bc_seek_parallel_handle_root(bc_seek_parallel_shared_t* shared, cons
     root_candidate.stat_populated = true;
     root_candidate.parent_directory_fd = AT_FDCWD;
 
-    bc_seek_filter_decision_t decision = bc_seek_filter_evaluate(shared->predicate, &root_candidate);
+    bc_seek_filter_decision_t decision = bc_seek_filter_evaluate(context->predicate, &root_candidate);
     if (decision == BC_SEEK_FILTER_DECISION_ACCEPT) {
-        if (!bc_seek_parallel_append_match(shared->main_memory_context, &shared->main_output_buffer, root_path, root_path_length,
-                                           shared->output_separator)) {
-            bc_seek_parallel_record_error(shared->errors, shared->main_memory_context, root_path, ENOMEM);
+        if (!bc_seek_parallel_append_match(memory_context, &root_result->main_output_buffer, root_path, root_path_length,
+                                           context->output_separator)) {
+            bc_seek_parallel_record_error(context->errors, memory_context, root_path, ENOMEM);
         } else {
-            shared->main_emitted_count += 1u;
+            root_result->main_emitted_count += 1u;
         }
     }
 
     if (root_type != BC_SEEK_ENTRY_TYPE_DIRECTORY) {
         return true;
     }
-    if (shared->predicate->has_max_depth && shared->predicate->max_depth == 0u) {
+    if (context->predicate->has_max_depth && context->predicate->max_depth == 0u) {
         return true;
     }
 
-    if (root_path_length >= BC_SEEK_PARALLEL_PATH_CAPACITY) {
-        bc_seek_parallel_record_error(shared->errors, shared->main_memory_context, root_path, ENAMETOOLONG);
-        return false;
-    }
-
-    bc_seek_parallel_queue_entry_t queue_entry;
-    bc_core_zero(&queue_entry, sizeof(queue_entry));
-    memcpy(queue_entry.absolute_path, root_path, root_path_length);
-    queue_entry.absolute_path[root_path_length] = '\0';
-    queue_entry.absolute_path_length = root_path_length;
-    queue_entry.depth = 0u;
-
-    atomic_fetch_add_explicit(&shared->outstanding_directory_count, 1, memory_order_relaxed);
-    if (!bc_concurrency_queue_push(shared->directory_queue, &queue_entry)) {
-        atomic_fetch_sub_explicit(&shared->outstanding_directory_count, 1, memory_order_relaxed);
-        bc_seek_parallel_record_error(shared->errors, shared->main_memory_context, root_path, ENOSPC);
-        return false;
-    }
+    bc_io_walk_config_t walk_config = {
+        .root = root_path,
+        .root_length = root_path_length,
+        .main_memory_context = memory_context,
+        .concurrency_context = concurrency_context,
+        .signal_handler = signal_handler,
+        .queue_capacity = 0,
+        .follow_symlinks = context->follow_symlinks,
+        .include_hidden = context->predicate->include_hidden,
+        .filter = NULL,
+        .filter_user_data = NULL,
+        .should_descend = bc_seek_parallel_should_descend,
+        .should_descend_user_data = context,
+        .visit = bc_seek_parallel_visit,
+        .visit_user_data = context,
+        .on_error = bc_seek_parallel_on_error,
+        .error_user_data = context,
+    };
+    bc_io_walk_stats_t stats;
+    (void)bc_io_walk_parallel(&walk_config, &stats);
     return true;
 }
 
@@ -496,27 +372,16 @@ bool bc_seek_discovery_walk_parallel(bc_allocators_context_t* memory_context, bc
                                                  errors, signal_handler);
     }
 
-    bc_seek_parallel_shared_t shared;
-    bc_core_zero(&shared, sizeof(shared));
-    shared.main_memory_context = memory_context;
-    shared.signal_handler = signal_handler;
-    shared.predicate = predicate;
-    shared.errors = errors;
-    shared.follow_symlinks = follow_symlinks;
-    shared.one_file_system = one_file_system;
-    shared.output_separator = output->separator;
-    atomic_store_explicit(&shared.outstanding_directory_count, 0, memory_order_relaxed);
-    atomic_store_explicit(&shared.root_device_initialized, 0u, memory_order_relaxed);
-
-    if (!bc_seek_output_bytes_reserve(memory_context, &shared.main_output_buffer, BC_SEEK_PARALLEL_OUTPUT_INITIAL_CAPACITY)) {
-        return false;
-    }
-
-    if (!bc_concurrency_queue_create(memory_context, sizeof(bc_seek_parallel_queue_entry_t), BC_SEEK_PARALLEL_QUEUE_CAPACITY,
-                                     &shared.directory_queue)) {
-        bc_seek_output_bytes_destroy(memory_context, &shared.main_output_buffer);
-        return false;
-    }
+    bc_seek_parallel_context_t context;
+    bc_core_zero(&context, sizeof(context));
+    context.main_memory_context = memory_context;
+    context.errors = errors;
+    context.predicate = predicate;
+    context.output_separator = output->separator;
+    context.follow_symlinks = follow_symlinks;
+    context.one_file_system = one_file_system;
+    atomic_store_explicit(&context.root_device_initialized, 0u, memory_order_relaxed);
+    atomic_store_explicit(&context.root_device, 0, memory_order_relaxed);
 
     bc_concurrency_slot_config_t slot_config = {
         .size = sizeof(bc_seek_parallel_worker_slot_t),
@@ -524,41 +389,41 @@ bool bc_seek_discovery_walk_parallel(bc_allocators_context_t* memory_context, bc
         .destroy = NULL,
         .arg = NULL,
     };
-    if (!bc_concurrency_register_slot(concurrency_context, &slot_config, &shared.worker_slot_index)) {
-        bc_concurrency_queue_destroy(shared.directory_queue);
-        bc_seek_output_bytes_destroy(memory_context, &shared.main_output_buffer);
+    if (!bc_concurrency_register_slot(concurrency_context, &slot_config, &context.worker_slot_index)) {
+        return false;
+    }
+
+    bc_seek_parallel_root_result_t root_result;
+    bc_core_zero(&root_result, sizeof(root_result));
+    if (!bc_seek_output_bytes_reserve(memory_context, &root_result.main_output_buffer, BC_SEEK_PARALLEL_OUTPUT_INITIAL_CAPACITY)) {
         return false;
     }
 
     bool any_root_ok = true;
     if (root_count == 0) {
         const char* default_root = ".";
-        if (!bc_seek_parallel_handle_root(&shared, default_root)) {
+        if (!bc_seek_parallel_handle_root(&context, memory_context, concurrency_context, (bc_concurrency_signal_handler_t*)signal_handler,
+                                          &root_result, default_root)) {
             any_root_ok = false;
         }
     } else {
         for (size_t root_index = 0; root_index < root_count; root_index++) {
-            if (!bc_seek_parallel_handle_root(&shared, root_paths[root_index])) {
+            if (!bc_seek_parallel_handle_root(&context, memory_context, concurrency_context, (bc_concurrency_signal_handler_t*)signal_handler,
+                                              &root_result, root_paths[root_index])) {
                 any_root_ok = false;
             }
         }
     }
 
-    size_t effective_worker_count = bc_concurrency_effective_worker_count(concurrency_context);
-    for (size_t worker_index = 0; worker_index < effective_worker_count; worker_index++) {
-        bc_concurrency_submit(concurrency_context, bc_seek_parallel_worker_task, &shared);
-    }
-    bc_concurrency_dispatch_and_wait(concurrency_context);
-
     bc_seek_parallel_iovec_builder_t builder;
     bc_core_zero(&builder, sizeof(builder));
-    if (shared.main_output_buffer.length > 0u && builder.count < BC_SEEK_PARALLEL_MAX_IOVEC) {
-        builder.iov[builder.count].iov_base = shared.main_output_buffer.data;
-        builder.iov[builder.count].iov_len = shared.main_output_buffer.length;
+    if (root_result.main_output_buffer.length > 0u && builder.count < BC_SEEK_PARALLEL_MAX_IOVEC) {
+        builder.iov[builder.count].iov_base = root_result.main_output_buffer.data;
+        builder.iov[builder.count].iov_len = root_result.main_output_buffer.length;
         builder.count += 1u;
-        builder.total_emitted += shared.main_emitted_count;
+        builder.total_emitted += root_result.main_emitted_count;
     }
-    bc_concurrency_foreach_slot(concurrency_context, shared.worker_slot_index, bc_seek_parallel_collect_slot_iovec, &builder);
+    bc_concurrency_foreach_slot(concurrency_context, context.worker_slot_index, bc_seek_parallel_collect_slot_iovec, &builder);
 
     bool merge_ok = true;
     if (builder.count > 0u) {
@@ -567,8 +432,7 @@ bool bc_seek_discovery_walk_parallel(bc_allocators_context_t* memory_context, bc
     }
     output->emitted_count += builder.total_emitted;
 
-    bc_seek_output_bytes_destroy(memory_context, &shared.main_output_buffer);
-    bc_concurrency_queue_destroy(shared.directory_queue);
+    bc_seek_output_bytes_destroy(memory_context, &root_result.main_output_buffer);
 
     return any_root_ok && merge_ok;
 }
