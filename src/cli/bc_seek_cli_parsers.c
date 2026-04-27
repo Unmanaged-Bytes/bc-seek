@@ -3,8 +3,9 @@
 #include "bc_seek_cli_internal.h"
 #include "bc_seek_strings_internal.h"
 
+#include <bc_core_parse.h>
+
 #include <ctype.h>
-#include <errno.h>
 #include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -186,10 +187,16 @@ bool bc_seek_cli_parse_threads(const char* value, bc_seek_threads_mode_t* out_mo
         *out_worker_count = 0;
         return true;
     }
-    char* end_pointer = NULL;
-    errno = 0;
-    unsigned long parsed_value = strtoul(value, &end_pointer, 10);
-    if (errno != 0 || end_pointer == value || *end_pointer != '\0') {
+    const size_t value_length = bc_seek_strings_length(value);
+    if (value_length == 0) {
+        return false;
+    }
+    uint64_t parsed_value = 0;
+    size_t consumed = 0;
+    if (!bc_core_parse_unsigned_integer_64_decimal(value, value_length, &parsed_value, &consumed)) {
+        return false;
+    }
+    if (consumed != value_length) {
         return false;
     }
     if (parsed_value == 0u) {

@@ -142,6 +142,10 @@ static void test_parse_threads(void** state)
     assert_false(bc_seek_cli_parse_threads("", &mode, &count));
     assert_false(bc_seek_cli_parse_threads("5x", &mode, &count));
     assert_false(bc_seek_cli_parse_threads("not-a-number", &mode, &count));
+    assert_false(bc_seek_cli_parse_threads("99999999999999999999", &mode, &count));
+    assert_false(bc_seek_cli_parse_threads("-1", &mode, &count));
+    assert_false(bc_seek_cli_parse_threads("+1", &mode, &count));
+    assert_false(bc_seek_cli_parse_threads(" 4", &mode, &count));
 }
 
 int main(void)

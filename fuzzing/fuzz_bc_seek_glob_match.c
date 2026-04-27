@@ -2,6 +2,8 @@
 
 #include "bc_seek_filter_internal.h"
 
+#include <bc_core_parse.h>
+
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,12 +47,27 @@ int main(int argc, char** argv)
         fprintf(stderr, "usage: %s <iterations> [seed]\n", argv[0]);
         return 2;
     }
-    const unsigned long iterations = strtoul(argv[1], NULL, 10);
-    const unsigned long seed = (argc >= 3) ? strtoul(argv[2], NULL, 10) : 0;
+    uint64_t iterations = 0;
+    size_t consumed = 0;
+    const size_t iterations_length = strlen(argv[1]);
+    if (!bc_core_parse_unsigned_integer_64_decimal(argv[1], iterations_length, &iterations, &consumed)
+        || consumed != iterations_length) {
+        fprintf(stderr, "invalid iterations: %s\n", argv[1]);
+        return 2;
+    }
+    uint64_t seed = 0;
+    if (argc >= 3) {
+        const size_t seed_length = strlen(argv[2]);
+        if (!bc_core_parse_unsigned_integer_64_decimal(argv[2], seed_length, &seed, &consumed)
+            || consumed != seed_length) {
+            fprintf(stderr, "invalid seed: %s\n", argv[2]);
+            return 2;
+        }
+    }
     srand((unsigned int)seed);
 
     uint8_t buffer[1024];
-    for (unsigned long i = 0; i < iterations; i++) {
+    for (uint64_t i = 0; i < iterations; i++) {
         const size_t length = (size_t)(rand() % (int)sizeof(buffer));
         for (size_t j = 0; j < length; j++) {
             buffer[j] = (uint8_t)(rand() & 0xFF);
