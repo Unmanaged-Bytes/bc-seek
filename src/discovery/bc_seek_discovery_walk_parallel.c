@@ -35,7 +35,7 @@ typedef struct bc_seek_parallel_worker_slot {
     bc_seek_output_bytes_t output_bytes;
     size_t emitted_count;
     bool initialized;
-    char cache_line_padding[BC_CACHE_LINE_SIZE - ((sizeof(bc_seek_output_bytes_t) + sizeof(size_t) + sizeof(bool)) % BC_CACHE_LINE_SIZE)];
+    BC_PAD_TO_CACHE_LINE(sizeof(bc_seek_output_bytes_t) + sizeof(size_t) + sizeof(bool));
 } bc_seek_parallel_worker_slot_t;
 
 typedef struct bc_seek_parallel_context {
