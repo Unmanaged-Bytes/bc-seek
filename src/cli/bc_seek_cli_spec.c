@@ -44,8 +44,8 @@ static const bc_runtime_cli_option_spec_t bc_seek_global_options[] = {
         .allowed_values = NULL,
         .default_value = "auto",
         .required = false,
-        .value_placeholder = "auto|0|N",
-        .help_summary = "worker count: auto, 0 (single-thread), or N",
+        .value_placeholder = "auto|auto-io|0|N",
+        .help_summary = "worker count: auto (physical cores), auto-io (logical cores, oversubscribe for I/O-bound), 0 (single-thread), or N",
     },
 };
 

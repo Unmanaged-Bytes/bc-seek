@@ -187,6 +187,11 @@ bool bc_seek_cli_parse_threads(const char* value, bc_seek_threads_mode_t* out_mo
         *out_worker_count = 0;
         return true;
     }
+    if (bc_seek_strings_equal(value, "auto-io")) {
+        *out_mode = BC_SEEK_THREADS_MODE_AUTO_IO;
+        *out_worker_count = 0;
+        return true;
+    }
     const size_t value_length = bc_seek_strings_length(value);
     if (value_length == 0) {
         return false;
