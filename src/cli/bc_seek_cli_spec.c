@@ -4,15 +4,36 @@
 #include "bc_seek_strings_internal.h"
 
 #include "bc_core.h"
+#include "bc_core_io.h"
 #include "bc_runtime.h"
 #include "bc_runtime_cli.h"
-
-#include <stdio.h>
-#include <stdlib.h>
 
 #ifndef BC_SEEK_VERSION_STRING
 #define BC_SEEK_VERSION_STRING "0.0.0-unversioned"
 #endif
+
+static void bc_seek_cli_emit_stderr(const char* prefix, const char* middle, const char* value, const char* suffix)
+{
+    char buffer[1024];
+    bc_core_writer_t writer;
+    if (!bc_core_writer_init_standard_error(&writer, buffer, sizeof(buffer))) {
+        return;
+    }
+    if (prefix != NULL) {
+        (void)bc_core_writer_write_cstring(&writer, prefix);
+    }
+    if (middle != NULL) {
+        (void)bc_core_writer_write_cstring(&writer, middle);
+    }
+    if (value != NULL) {
+        (void)bc_core_writer_write_cstring(&writer, value);
+    }
+    if (suffix != NULL) {
+        (void)bc_core_writer_write_cstring(&writer, suffix);
+    }
+    (void)bc_core_writer_flush(&writer);
+    (void)bc_core_writer_destroy(&writer);
+}
 
 static const char* const bc_seek_type_allowed_values[] = {"f", "d", "l", "file", "dir", "link", "symlink", NULL};
 
@@ -206,11 +227,11 @@ bool bc_seek_cli_bind_global_threads(const bc_runtime_config_store_t* store, bc_
 {
     const char* threads_value = NULL;
     if (!bc_runtime_config_store_get_string(store, "global.threads", &threads_value)) {
-        fputs("bc-seek: internal error: missing global.threads\n", stderr);
+        bc_seek_cli_emit_stderr("bc-seek: internal error: missing global.threads\n", NULL, NULL, NULL);
         return false;
     }
     if (!bc_seek_cli_parse_threads(threads_value, out_mode, out_worker_count)) {
-        fprintf(stderr, "bc-seek: invalid --threads value: '%s'\n", threads_value);
+        bc_seek_cli_emit_stderr("bc-seek: invalid --threads value: '", NULL, threads_value, "'\n");
         return false;
     }
     return true;
@@ -270,7 +291,7 @@ bool bc_seek_cli_bind_options(const bc_runtime_config_store_t* store, const bc_r
     bool has_name = bc_seek_cli_lookup_string(store, "find.name", &name_value);
     bool has_iname = bc_seek_cli_lookup_string(store, "find.iname", &iname_value);
     if (has_name && has_iname) {
-        fputs("bc-seek: --name and --iname are mutually exclusive\n", stderr);
+        bc_seek_cli_emit_stderr("bc-seek: --name and --iname are mutually exclusive\n", NULL, NULL, NULL);
         return false;
     }
     if (has_name) {
@@ -292,7 +313,7 @@ bool bc_seek_cli_bind_options(const bc_runtime_config_store_t* store, const bc_r
     const char* type_value = NULL;
     if (bc_seek_cli_lookup_string(store, "find.type", &type_value)) {
         if (!bc_seek_cli_parse_type_filter(type_value, &out_options->type_filter)) {
-            fprintf(stderr, "bc-seek: invalid --type: '%s'\n", type_value);
+            bc_seek_cli_emit_stderr("bc-seek: invalid --type: '", NULL, type_value, "'\n");
             return false;
         }
         out_options->has_type_filter = true;
@@ -301,7 +322,7 @@ bool bc_seek_cli_bind_options(const bc_runtime_config_store_t* store, const bc_r
     const char* size_value = NULL;
     if (bc_seek_cli_lookup_string(store, "find.size", &size_value)) {
         if (!bc_seek_cli_parse_size_filter(size_value, &out_options->size_op, &out_options->size_threshold_bytes)) {
-            fprintf(stderr, "bc-seek: invalid --size: '%s'\n", size_value);
+            bc_seek_cli_emit_stderr("bc-seek: invalid --size: '", NULL, size_value, "'\n");
             return false;
         }
         out_options->has_size_filter = true;
@@ -311,11 +332,11 @@ bool bc_seek_cli_bind_options(const bc_runtime_config_store_t* store, const bc_r
     if (bc_seek_cli_lookup_string(store, "find.mtime", &mtime_value)) {
         int64_t days = 0;
         if (!bc_seek_cli_parse_mtime_filter(mtime_value, &out_options->mtime_op, &days)) {
-            fprintf(stderr, "bc-seek: invalid --mtime: '%s'\n", mtime_value);
+            bc_seek_cli_emit_stderr("bc-seek: invalid --mtime: '", NULL, mtime_value, "'\n");
             return false;
         }
         if (days > (int64_t)(INT64_MAX / 86400)) {
-            fprintf(stderr, "bc-seek: --mtime value out of range: '%s'\n", mtime_value);
+            bc_seek_cli_emit_stderr("bc-seek: --mtime value out of range: '", NULL, mtime_value, "'\n");
             return false;
         }
         out_options->mtime_threshold_seconds_ago = days * 86400;
@@ -326,7 +347,7 @@ bool bc_seek_cli_bind_options(const bc_runtime_config_store_t* store, const bc_r
     if (bc_seek_cli_lookup_string(store, "find.newer", &newer_value)) {
         time_t reference_mtime = 0;
         if (!bc_seek_cli_bind_newer_reference(newer_value, &reference_mtime)) {
-            fprintf(stderr, "bc-seek: cannot stat --newer reference: '%s'\n", newer_value);
+            bc_seek_cli_emit_stderr("bc-seek: cannot stat --newer reference: '", NULL, newer_value, "'\n");
             return false;
         }
         out_options->has_newer_reference = true;
@@ -336,7 +357,7 @@ bool bc_seek_cli_bind_options(const bc_runtime_config_store_t* store, const bc_r
     const char* perm_value = NULL;
     if (bc_seek_cli_lookup_string(store, "find.perm", &perm_value)) {
         if (!bc_seek_cli_parse_perm_filter(perm_value, &out_options->perm_mask)) {
-            fprintf(stderr, "bc-seek: invalid --perm: '%s'\n", perm_value);
+            bc_seek_cli_emit_stderr("bc-seek: invalid --perm: '", NULL, perm_value, "'\n");
             return false;
         }
         out_options->has_perm_filter = true;
@@ -345,7 +366,7 @@ bool bc_seek_cli_bind_options(const bc_runtime_config_store_t* store, const bc_r
     long max_depth_value = -1;
     if (bc_seek_cli_lookup_integer(store, "find.max-depth", &max_depth_value)) {
         if (max_depth_value < 0) {
-            fputs("bc-seek: --max-depth must be non-negative\n", stderr);
+            bc_seek_cli_emit_stderr("bc-seek: --max-depth must be non-negative\n", NULL, NULL, NULL);
             return false;
         }
         out_options->has_max_depth = true;
@@ -355,14 +376,14 @@ bool bc_seek_cli_bind_options(const bc_runtime_config_store_t* store, const bc_r
     long min_depth_value = 0;
     if (bc_seek_cli_lookup_integer(store, "find.min-depth", &min_depth_value)) {
         if (min_depth_value < 0) {
-            fputs("bc-seek: --min-depth must be non-negative\n", stderr);
+            bc_seek_cli_emit_stderr("bc-seek: --min-depth must be non-negative\n", NULL, NULL, NULL);
             return false;
         }
         out_options->min_depth = (size_t)min_depth_value;
     }
 
     if (out_options->has_max_depth && out_options->min_depth > out_options->max_depth) {
-        fputs("bc-seek: --min-depth cannot exceed --max-depth\n", stderr);
+        bc_seek_cli_emit_stderr("bc-seek: --min-depth cannot exceed --max-depth\n", NULL, NULL, NULL);
         return false;
     }
 
@@ -393,11 +414,11 @@ bool bc_seek_cli_bind_options(const bc_runtime_config_store_t* store, const bc_r
 
     const char* output_value = NULL;
     if (!bc_runtime_config_store_get_string(store, "find.output", &output_value)) {
-        fputs("bc-seek: internal error: missing find.output\n", stderr);
+        bc_seek_cli_emit_stderr("bc-seek: internal error: missing find.output\n", NULL, NULL, NULL);
         return false;
     }
     if (!bc_seek_cli_bind_output(output_value, &out_options->output_mode, &out_options->output_path)) {
-        fprintf(stderr, "bc-seek: invalid --output: '%s'\n", output_value);
+        bc_seek_cli_emit_stderr("bc-seek: invalid --output: '", NULL, output_value, "'\n");
         return false;
     }
 

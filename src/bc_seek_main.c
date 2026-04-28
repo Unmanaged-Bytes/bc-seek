@@ -10,12 +10,34 @@
 #include "bc_allocators.h"
 #include "bc_concurrency.h"
 #include "bc_core.h"
+#include "bc_core_io.h"
 #include "bc_runtime.h"
 #include "bc_runtime_cli.h"
 
 #include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+
+static void bc_seek_emit_stderr_message(const char* prefix, const char* middle, const char* path, const char* suffix)
+{
+    char buffer[1024];
+    bc_core_writer_t writer;
+    if (!bc_core_writer_init_standard_error(&writer, buffer, sizeof(buffer))) {
+        return;
+    }
+    if (prefix != NULL) {
+        (void)bc_core_writer_write_cstring(&writer, prefix);
+    }
+    if (middle != NULL) {
+        (void)bc_core_writer_write_cstring(&writer, middle);
+    }
+    if (path != NULL) {
+        (void)bc_core_writer_write_cstring(&writer, path);
+    }
+    if (suffix != NULL) {
+        (void)bc_core_writer_write_cstring(&writer, suffix);
+    }
+    (void)bc_core_writer_flush(&writer);
+    (void)bc_core_writer_destroy(&writer);
+}
 
 typedef struct bc_seek_application_state {
     bc_seek_cli_options_t cli_options;
@@ -48,13 +70,13 @@ static bool bc_seek_application_init(const bc_runtime_t* application, void* user
 
     if (state->cli_options.output_mode == BC_SEEK_OUTPUT_MODE_STDOUT) {
         if (!bc_seek_output_open_stdout(state->cli_options.null_terminated, &state->output)) {
-            fputs("bc-seek: cannot configure stdout output\n", stderr);
+            bc_seek_emit_stderr_message("bc-seek: cannot configure stdout output\n", NULL, NULL, NULL);
             state->exit_code = 1;
             return false;
         }
     } else {
         if (!bc_seek_output_open_file(state->cli_options.output_path, state->cli_options.null_terminated, &state->output)) {
-            fprintf(stderr, "bc-seek: cannot open output '%s'\n", state->cli_options.output_path);
+            bc_seek_emit_stderr_message("bc-seek: cannot open output '", NULL, state->cli_options.output_path, "'\n");
             state->exit_code = 1;
             return false;
         }
@@ -144,13 +166,13 @@ int main(int argument_count, char** argument_values)
                                                         .leak_callback_argument = NULL};
     bc_allocators_context_t* cli_memory_context = NULL;
     if (!bc_allocators_context_create(&cli_memory_config, &cli_memory_context)) {
-        fputs("bc-seek: failed to initialize CLI memory context\n", stderr);
+        bc_seek_emit_stderr_message("bc-seek: failed to initialize CLI memory context\n", NULL, NULL, NULL);
         return 1;
     }
 
     bc_runtime_config_store_t* cli_store = NULL;
     if (!bc_runtime_config_store_create(cli_memory_context, &cli_store)) {
-        fputs("bc-seek: failed to initialize CLI config store\n", stderr);
+        bc_seek_emit_stderr_message("bc-seek: failed to initialize CLI config store\n", NULL, NULL, NULL);
         bc_allocators_context_destroy(cli_memory_context);
         return 1;
     }
@@ -218,7 +240,7 @@ int main(int argument_count, char** argument_values)
 
     bc_runtime_t* runtime = NULL;
     if (!bc_runtime_create(&runtime_config, &runtime_callbacks, &state, &runtime)) {
-        fputs("bc-seek: failed to initialize runtime\n", stderr);
+        bc_seek_emit_stderr_message("bc-seek: failed to initialize runtime\n", NULL, NULL, NULL);
         bc_runtime_config_store_destroy(cli_memory_context, cli_store);
         bc_allocators_context_destroy(cli_memory_context);
         return 1;

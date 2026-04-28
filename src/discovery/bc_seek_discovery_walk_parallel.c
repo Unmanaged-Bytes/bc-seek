@@ -20,7 +20,6 @@ BC_TYPED_ARRAY_DEFINE(char, bc_seek_output_bytes)
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -426,8 +425,10 @@ bool bc_seek_discovery_walk_parallel(bc_allocators_context_t* memory_context, bc
 
     bool merge_ok = true;
     if (builder.count > 0u) {
-        fflush(output->stream);
-        merge_ok = bc_seek_parallel_write_all_iovec(fileno(output->stream), builder.iov, builder.count);
+        if (!bc_core_writer_flush(&output->writer)) {
+            merge_ok = false;
+        }
+        merge_ok = merge_ok && bc_seek_parallel_write_all_iovec(output->fd, builder.iov, builder.count);
     }
     output->emitted_count += builder.total_emitted;
 

@@ -3,42 +3,42 @@
 #include "bc_seek_output_internal.h"
 
 #include "bc_core.h"
+#include "bc_core_io.h"
 
-#include <errno.h>
-#include <stdio.h>
-#include <string.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 #define BC_SEEK_OUTPUT_EMIT_STACK_CAPACITY ((size_t)4097)
 
-#define BC_SEEK_OUTPUT_BUFFER_BYTES ((size_t)(64 * 1024))
-
-static char bc_seek_output_buffer_stdout[BC_SEEK_OUTPUT_BUFFER_BYTES];
-
-static bool bc_seek_output_attach(bc_seek_output_t* output, FILE* stream, bool null_terminated, bool owns_stream, char* buffer, size_t buffer_size)
+static bool bc_seek_output_attach(bc_seek_output_t* output, int fd, bool null_terminated, bool owns_fd)
 {
     bc_core_zero(output, sizeof(*output));
-    output->stream = stream;
+    output->fd = fd;
+    output->owns_fd = owns_fd;
     output->separator = null_terminated ? '\0' : '\n';
-    output->owns_stream = owns_stream;
     output->emitted_count = 0;
-    if (buffer != NULL && buffer_size > 0) {
-        (void)setvbuf(stream, buffer, _IOFBF, buffer_size);
+    if (!bc_core_writer_init(&output->writer, fd, output->buffer, sizeof(output->buffer))) {
+        if (owns_fd) {
+            (void)close(fd);
+        }
+        output->fd = -1;
+        return false;
     }
     return true;
 }
 
 bool bc_seek_output_open_stdout(bool null_terminated, bc_seek_output_t* out_output)
 {
-    return bc_seek_output_attach(out_output, stdout, null_terminated, false, bc_seek_output_buffer_stdout, sizeof(bc_seek_output_buffer_stdout));
+    return bc_seek_output_attach(out_output, STDOUT_FILENO, null_terminated, false);
 }
 
 bool bc_seek_output_open_file(const char* path, bool null_terminated, bc_seek_output_t* out_output)
 {
-    FILE* stream = fopen(path, "w");
-    if (stream == NULL) {
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    if (fd < 0) {
         return false;
     }
-    return bc_seek_output_attach(out_output, stream, null_terminated, true, NULL, 0);
+    return bc_seek_output_attach(out_output, fd, null_terminated, true);
 }
 
 bool bc_seek_output_emit(bc_seek_output_t* output, const char* path, size_t path_length)
@@ -47,14 +47,14 @@ bool bc_seek_output_emit(bc_seek_output_t* output, const char* path, size_t path
         char combined[BC_SEEK_OUTPUT_EMIT_STACK_CAPACITY];
         bc_core_copy(combined, path, path_length);
         combined[path_length] = output->separator;
-        if (fwrite(combined, 1, path_length + 1u, output->stream) != path_length + 1u) {
+        if (!bc_core_writer_write_bytes(&output->writer, combined, path_length + 1u)) {
             return false;
         }
     } else {
-        if (fwrite(path, 1, path_length, output->stream) != path_length) {
+        if (!bc_core_writer_write_bytes(&output->writer, path, path_length)) {
             return false;
         }
-        if (fputc((unsigned char)output->separator, output->stream) == EOF) {
+        if (!bc_core_writer_write_char(&output->writer, output->separator)) {
             return false;
         }
     }
@@ -64,15 +64,16 @@ bool bc_seek_output_emit(bc_seek_output_t* output, const char* path, size_t path
 
 bool bc_seek_output_close(bc_seek_output_t* output)
 {
-    if (output->stream == NULL) {
+    if (output->fd < 0) {
         return true;
     }
-    bool ok = fflush(output->stream) == 0;
-    if (output->owns_stream) {
-        if (fclose(output->stream) != 0) {
+    bool ok = bc_core_writer_flush(&output->writer);
+    (void)bc_core_writer_destroy(&output->writer);
+    if (output->owns_fd) {
+        if (close(output->fd) != 0) {
             ok = false;
         }
     }
-    output->stream = NULL;
+    output->fd = -1;
     return ok;
 }

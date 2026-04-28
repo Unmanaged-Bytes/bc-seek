@@ -3,14 +3,19 @@
 #ifndef BC_SEEK_OUTPUT_INTERNAL_H
 #define BC_SEEK_OUTPUT_INTERNAL_H
 
+#include "bc_core_io.h"
+
 #include <stdbool.h>
 #include <stddef.h>
-#include <stdio.h>
+
+#define BC_SEEK_OUTPUT_BUFFER_BYTES ((size_t)(64 * 1024))
 
 typedef struct bc_seek_output {
-    FILE* stream;
+    bc_core_writer_t writer;
+    char buffer[BC_SEEK_OUTPUT_BUFFER_BYTES];
+    int fd;
+    bool owns_fd;
     char separator;
-    bool owns_stream;
     size_t emitted_count;
 } bc_seek_output_t;
 

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 unusedFunction:*/bc_core_math.h
+unusedFunction:*/bc_containers_vector.h
 // BC_TYPED_ARRAY_DEFINE emits 10-odd `static inline __attribute__((unused))`
 // helpers at its invocation line. cppcheck 2.13 (Ubuntu 24.04 CI) does
 // not honour `__attribute__((unused))` on macro-expanded declarations

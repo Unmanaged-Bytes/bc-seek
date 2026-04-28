@@ -9,7 +9,6 @@
 #include <fcntl.h>
 #include <fnmatch.h>
 #include <stdint.h>
-#include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <time.h>
@@ -42,7 +41,8 @@ bool bc_seek_filter_ignored_directory_name(const char* name, size_t name_length)
         if (candidate_length != name_length) {
             continue;
         }
-        if (memcmp(candidate, name, name_length) == 0) {
+        bool equal = false;
+        if (bc_core_equal(candidate, name, name_length, &equal) && equal) {
             return true;
         }
     }
