@@ -231,7 +231,7 @@ int main(int argument_count, char** argument_values)
         if (state.cli_options.explicit_worker_count > bc_concurrency_physical_core_count()) {
             parallel_config.allow_oversubscribe = true;
         }
-    } else if (state.cli_options.threads_mode == BC_SEEK_THREADS_MODE_AUTO_IO) {
+    } else if (state.cli_options.threads_mode == BC_SEEK_THREADS_MODE_IO) {
         size_t logical_processor_count = bc_concurrency_logical_processor_count();
         parallel_config.allow_oversubscribe = true;
         parallel_config.worker_count_explicit = true;
