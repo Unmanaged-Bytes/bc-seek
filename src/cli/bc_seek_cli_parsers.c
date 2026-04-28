@@ -182,8 +182,18 @@ bool bc_seek_cli_parse_threads(const char* value, bc_seek_threads_mode_t* out_mo
     if (value == NULL || value[0] == '\0') {
         return false;
     }
+    if (bc_seek_strings_equal(value, "mono")) {
+        *out_mode = BC_SEEK_THREADS_MODE_MONO;
+        *out_worker_count = 0;
+        return true;
+    }
     if (bc_seek_strings_equal(value, "auto")) {
         *out_mode = BC_SEEK_THREADS_MODE_AUTO;
+        *out_worker_count = 0;
+        return true;
+    }
+    if (bc_seek_strings_equal(value, "io")) {
+        *out_mode = BC_SEEK_THREADS_MODE_IO;
         *out_worker_count = 0;
         return true;
     }

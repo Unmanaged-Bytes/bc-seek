@@ -26,6 +26,7 @@ typedef enum {
     BC_SEEK_THREADS_MODE_AUTO = 0,
     BC_SEEK_THREADS_MODE_MONO = 1,
     BC_SEEK_THREADS_MODE_EXPLICIT = 2,
+    BC_SEEK_THREADS_MODE_IO = 3,
 } bc_seek_threads_mode_t;
 
 typedef enum {

@@ -221,6 +221,21 @@ int main(int argument_count, char** argument_values)
     } else if (state.cli_options.threads_mode == BC_SEEK_THREADS_MODE_EXPLICIT) {
         parallel_config.worker_count_explicit = true;
         parallel_config.worker_count = state.cli_options.explicit_worker_count > 0 ? state.cli_options.explicit_worker_count - 1 : 0;
+        size_t logical_processor_count = bc_concurrency_logical_processor_count();
+        if (state.cli_options.explicit_worker_count > logical_processor_count) {
+            bc_seek_emit_stderr_message("bc-seek: --threads exceeds online logical processors\n", NULL, NULL, NULL);
+            bc_runtime_config_store_destroy(cli_memory_context, cli_store);
+            bc_allocators_context_destroy(cli_memory_context);
+            return 2;
+        }
+        if (state.cli_options.explicit_worker_count > bc_concurrency_physical_core_count()) {
+            parallel_config.allow_oversubscribe = true;
+        }
+    } else if (state.cli_options.threads_mode == BC_SEEK_THREADS_MODE_IO) {
+        size_t logical_processor_count = bc_concurrency_logical_processor_count();
+        parallel_config.allow_oversubscribe = true;
+        parallel_config.worker_count_explicit = true;
+        parallel_config.worker_count = logical_processor_count >= 2 ? logical_processor_count - 1 : 0;
     }
 
     bc_runtime_config_t runtime_config = {
