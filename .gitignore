@@ -15,3 +15,5 @@ debian/debhelper-build-stamp
 debian/files
 debian/bc-seek/
 debian/bc-seek.substvars
+
+reports/
