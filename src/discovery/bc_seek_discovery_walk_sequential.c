@@ -149,8 +149,11 @@ static bool bc_seek_walk_open_subdir(const bc_seek_walk_context_t* context, int 
 
 static bool bc_seek_walk_iterate_entries(bc_seek_walk_context_t* context, int directory_fd, char* path_buffer, size_t path_length, size_t depth)
 {
-    bc_io_dirent_reader_t reader;
-    bc_io_dirent_reader_init(&reader, directory_fd);
+    bc_io_dirent_reader_t* reader = NULL;
+    if (!bc_io_dirent_reader_create(context->memory_context, directory_fd, &reader)) {
+        bc_runtime_error_collector_append(context->errors, context->memory_context, path_buffer, NULL, ENOMEM);
+        return false;
+    }
 
     bool ok = true;
     for (;;) {
@@ -160,8 +163,10 @@ static bool bc_seek_walk_iterate_entries(bc_seek_walk_context_t* context, int di
         }
         bc_io_dirent_entry_t entry;
         bool has_entry = false;
-        if (!bc_io_dirent_reader_next(&reader, &entry, &has_entry)) {
-            bc_runtime_error_collector_append(context->errors, context->memory_context, path_buffer, NULL, reader.last_errno);
+        if (!bc_io_dirent_reader_next(reader, &entry, &has_entry)) {
+            int reader_errno = 0;
+            bc_io_dirent_reader_last_errno(reader, &reader_errno);
+            bc_runtime_error_collector_append(context->errors, context->memory_context, path_buffer, NULL, reader_errno);
             ok = false;
             break;
         }
@@ -224,6 +229,7 @@ static bool bc_seek_walk_iterate_entries(bc_seek_walk_context_t* context, int di
         bc_seek_walk_truncate(path_buffer, &path_length, saved_path_length);
     }
 
+    bc_io_dirent_reader_destroy(context->memory_context, reader);
     return ok;
 }
 
@@ -323,8 +329,6 @@ bool bc_seek_discovery_walk_sequential(bc_allocators_context_t* memory_context, 
                                        bc_seek_output_t* output, bc_runtime_error_collector_t* errors,
                                        const bc_concurrency_signal_handler_t* signal_handler)
 {
-    BC_UNUSED(memory_context);
-
     bc_seek_walk_context_t context;
     bc_core_zero(&context, sizeof(context));
     context.predicate = predicate;
